@@ -43,7 +43,59 @@ li[aria-selected="true"] { background-color: #FF4B4B !important; color: white !i
 </style>
 """
 
-# --- Session State 初始化函式 (優化) ---
+# --- 登入與安全函式 ---
+
+def logout():
+    """登出函式：清除驗證狀態並重新運行。"""
+    st.session_state.authenticated = False
+    st.rerun()
+
+def login_form():
+    """渲染登入表單並處理密碼驗證。"""
+    
+    # 設置預設的用戶名和密碼，僅供本地開發和測試使用
+    DEFAULT_USERNAME = "tajung "
+    DEFAULT_PASSWORD = "tjdfb24676881"
+
+    # 嘗試從 Streamlit secrets 讀取配置
+    try:
+        credentials = st.secrets["auth"]
+    except (KeyError, FileNotFoundError):
+        # 如果 secrets 檔案不存在，則使用預設值
+        credentials = {"username": DEFAULT_USERNAME, "password": DEFAULT_PASSWORD}
+
+    # 初始化驗證狀態
+    if "authenticated" not in st.session_state:
+        st.session_state["authenticated"] = False
+        
+    if st.session_state["authenticated"]:
+        return # 如果已驗證，則跳過登入表單
+
+    # 渲染登入介面
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col_empty, col_center, col_empty2 = st.columns([1, 2, 1])
+    
+    with col_center:
+        with st.container(border=True):
+            st.title("🔐 請登入以繼續")
+            st.markdown("---")
+            
+            username = st.text_input("用戶名", key="login_username")
+            password = st.text_input("密碼", type="password", key="login_password")
+            
+            if st.button("登入", type="primary"):
+                if username == credentials["username"] and password == credentials["password"]:
+                    st.session_state["authenticated"] = True
+                    st.toast("✅ 登入成功！")
+                    st.rerun()
+                else:
+                    st.error("用戶名或密碼錯誤。")
+            
+    # 如果未驗證，阻止執行後續程式碼
+    st.stop()
+
+
+# --- Session State 初始化函式 ---
 def initialize_session_state():
     """初始化所有 Streamlit Session State 變數。"""
     today = datetime.now().date()
@@ -170,11 +222,11 @@ def handle_batch_delete_quotes():
 
     st.session_state.data = main_df[main_df['標記刪除'] == False].drop(columns=['標記刪除'], errors='ignore')
     
-    st.session_state.show_delete_confirm = False
+    st.session_state.show_delete_confirm = False # 重設確認狀態
     st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。")
     st.rerun()
 
-# 批次刪除的觸發函式 (優化)
+# 批次刪除的觸發函式
 def trigger_delete_confirmation():
     """點擊 '刪除已標記項目' 按鈕時，觸發確認流程。"""
     
@@ -210,6 +262,7 @@ def cancel_delete_confirmation():
 
 
 def calculate_project_budget(df, project_name):
+    # 此函式用於單一專案的預算顯示
     proj_df = df[df['專案名稱'] == project_name]
     total_budget = 0
     for _, item_df in proj_df.groupby('專案項目'):
@@ -233,8 +286,6 @@ def handle_master_save():
     affected_projects = set()
     changes_detected = False
     
-    # 優化: 直接在主 DataFrame 上進行修改 (因為 st.data_editor 返回的是副本，所以我們在存儲前統一處理)
-    
     for _, edited_df in st.session_state.edited_dataframes.items():
         if edited_df.empty: continue
         
@@ -250,7 +301,6 @@ def handle_master_save():
                  main_df.loc[main_idx, '選取'] = new_row['選取']
                  changes_detected = True
                  
-            # 簡化：直接更新可編輯欄位，依賴 Streamlit 的快照功能確保一致性
             updatable_cols = ['供應商', '單價', '數量', '狀態']
             for col in updatable_cols:
                 if main_df.loc[main_idx, col] != new_row[col]:
@@ -408,13 +458,18 @@ def handle_add_new_quote(latest_arrival_date):
 
 # --- 主要應用程式 ---
 def main():
-    # FIX: 應用程式標題版本化
     st.title(f"🛠️ 專案採購管理工具 {APP_VERSION}")
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-
-    # FIX: 統一初始化
+    
+    # 執行登入驗證
+    login_form()
+    
+    # 確保只有在已驗證狀態下才顯示登出按鈕並執行初始化
+    st.sidebar.button("登出", on_click=logout)
     initialize_session_state()
 
+    # --- 應用程式的主體開始 ---
+    
     today = datetime.now().date() 
 
     # --- 側邊欄 ---
