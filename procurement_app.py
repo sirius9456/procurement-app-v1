@@ -54,8 +54,8 @@ def login_form():
     """渲染登入表單並處理密碼驗證。"""
     
     # 設置預設的用戶名和密碼，僅供本地開發和測試使用
-    DEFAULT_USERNAME = "tajung "
-    DEFAULT_PASSWORD = "tjdfb24676881"
+    DEFAULT_USERNAME = "admin"
+    DEFAULT_PASSWORD = "password123"
 
     # 嘗試從 Streamlit secrets 讀取配置
     try:
@@ -738,3 +738,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
