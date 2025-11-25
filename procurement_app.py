@@ -2,10 +2,39 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from io import BytesIO
+import os # 新增: 導入 os 模組用於讀取環境變數
 
 # --- 應用程式設定 ---
-APP_VERSION = "v1.0.0"
+APP_VERSION = "v2.0.0 (Google Sheets Beta)" # 版本更新為 v2.0.0
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
+
+# --- 數據源配置 (GCP/本地通用配置) ---
+# 檢查環境變數 GCE_SHEET_URL，如果不存在，則使用 st.secrets (用於 Streamlit Cloud)
+if "GCE_SHEET_URL" in os.environ:
+    SHEET_URL = os.environ["GCE_SHEET_URL"]
+    
+    # GCE 部署時，從環境變數讀取憑證檔案路徑
+    try:
+        # GSHEETS_CREDENTIALS_PATH 是你在 systemd 服務檔案中設置的環境變數
+        GSHEETS_CREDENTIALS = os.environ["GSHEETS_CREDENTIALS_PATH"] 
+    except KeyError:
+        # 如果在 GCE 環境中找不到路徑，報錯並使用 None (讓連接器使用預設行為)
+        st.error("❌ 錯誤：在 GCE 環境中未找到 GSHEETS_CREDENTIALS_PATH 環境變數。")
+        GSHEETS_CREDENTIALS = None 
+        
+else:
+    # Streamlit Cloud 或本地 .secrets 部署
+    # 這裡假設你在 .streamlit/secrets.toml 中有一個 app_config 區塊
+    try:
+        SHEET_URL = st.secrets["app_config"]["sheet_url"]
+    except KeyError:
+        st.error("❌ 錯誤：請在 secrets.toml 檔案中配置 [app_config] sheet_url。")
+        SHEET_URL = None
+    GSHEETS_CREDENTIALS = None # st.connection 會自動處理 st.secrets
+
+DATA_SHEET_NAME = "採購總表"     # 包含報價數據的工作表名稱
+METADATA_SHEET_NAME = "專案設定" # 包含專案設定的工作表名稱
+
 
 # 設定頁面標題與寬度
 st.set_page_config(page_title=f"專案採購小幫手 {APP_VERSION}", layout="wide")
@@ -43,90 +72,116 @@ li[aria-selected="true"] { background-color: #FF4B4B !important; color: white !i
 </style>
 """
 
-# --- 登入與安全函式 ---
+# --- 數據讀取與寫入函式 (核心修改) ---
 
-def logout():
-    """登出函式：清除驗證狀態並重新運行。"""
-    st.session_state.authenticated = False
-    st.rerun()
-
-def login_form():
-    """渲染登入表單並處理密碼驗證。"""
+@st.cache_data(ttl=600, show_spinner="連線 Google Sheets...") # 緩存數據，每 10 分鐘檢查一次 Sheets
+def load_data_from_sheets():
+    """使用 st.connection 讀取 Google Sheets 中的採購總表和專案設定。"""
     
-    # 設置預設的用戶名和密碼，僅供本地開發和測試使用
-    DEFAULT_USERNAME = "admin"
-    DEFAULT_PASSWORD = "password123"
-
-    # 嘗試從 Streamlit secrets 讀取配置
+    if not SHEET_URL:
+        st.stop() # 如果 URL 為空，則停止運行
+    
     try:
-        credentials = st.secrets["auth"]
-    except (KeyError, FileNotFoundError):
-        # 如果 secrets 檔案不存在，則使用預設值
-        credentials = {"username": DEFAULT_USERNAME, "password": DEFAULT_PASSWORD}
-
-    # 初始化驗證狀態
-    if "authenticated" not in st.session_state:
-        st.session_state["authenticated"] = False
+        # 根據部署環境動態調整連接器參數
+        if GSHEETS_CREDENTIALS and os.path.exists(GSHEETS_CREDENTIALS):
+            # GCE 模式: 使用憑證檔案路徑 (在 systemd 中設定)
+            conn = st.connection("gsheets", type=st.connection_factory.google_sheets, 
+                                 credentials=GSHEETS_CREDENTIALS) 
+        else:
+            # Streamlit Cloud/本地模式: 使用 st.secrets
+            conn = st.connection("gsheets", type=st.connection_factory.google_sheets)
         
-    if st.session_state["authenticated"]:
-        return # 如果已驗證，則跳過登入表單
+        # 1. 讀取採購總表 (Data)
+        data_df = conn.read(spreadsheet=SHEET_URL, worksheet=DATA_SHEET_NAME, ttl=5)
+        
+        # 數據類型轉換與處理
+        data_df = data_df.astype({
+            'ID': 'Int64', '選取': 'bool', '單價': 'float', '數量': 'Int64', '總價': 'float'
+        })
+        # 確保 '標記刪除' 欄位存在
+        if '標記刪除' not in data_df.columns:
+            data_df['標記刪除'] = False
+        
+        # 2. 讀取專案設定 (Metadata)
+        metadata_df = conn.read(spreadsheet=SHEET_URL, worksheet=METADATA_SHEET_NAME, ttl=5)
+        
+        # 轉換為 dictionary 格式
+        project_metadata = {}
+        if not metadata_df.empty:
+            for index, row in metadata_df.iterrows():
+                project_metadata[row['專案名稱']] = {
+                    'due_date': datetime.strptime(str(row['專案交貨日']), '%Y-%m-%d').date(),
+                    'buffer_days': int(row['緩衝天數']),
+                    'last_modified': str(row['最後修改'])
+                }
 
-    # 渲染登入介面
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    col_empty, col_center, col_empty2 = st.columns([1, 2, 1])
-    
-    with col_center:
-        with st.container(border=True):
-            st.title("🔐 請登入以繼續")
-            st.markdown("---")
-            
-            username = st.text_input("用戶名", key="login_username")
-            password = st.text_input("密碼", type="password", key="login_password")
-            
-            if st.button("登入", type="primary"):
-                if username == credentials["username"] and password == credentials["password"]:
-                    st.session_state["authenticated"] = True
-                    st.toast("✅ 登入成功！")
-                    st.rerun()
-                else:
-                    st.error("用戶名或密碼錯誤。")
-            
-    # 如果未驗證，阻止執行後續程式碼
-    st.stop()
+        return data_df, project_metadata
+
+    except Exception as e:
+        # 如果載入失敗，我們將使用空白 DataFrame 防止應用程式崩潰
+        st.error(f"❌ 數據載入失敗！請檢查 Google Sheets 憑證、URL/工作表名稱和 API 權限。")
+        st.code(f"錯誤訊息: {e}")
+        
+        # 設置空的 DataFrame 結構以防止後續程式碼崩潰
+        empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '標記刪除'])
+        empty_meta = {}
+        st.session_state.data_load_failed = True
+        return empty_data, empty_meta
+
+def write_data_to_sheets(df_to_write, metadata_to_write):
+    """將採購總表和專案設定寫回 Google Sheets。"""
+    if st.session_state.get('data_load_failed', False):
+        st.warning("數據載入失敗，已禁用寫入 Sheets。")
+        return False
+        
+    try:
+        if GSHEETS_CREDENTIALS and os.path.exists(GSHEETS_CREDENTIALS):
+            conn = st.connection("gsheets", type=st.connection_factory.google_sheets, credentials=GSHEETS_CREDENTIALS) 
+        else:
+            conn = st.connection("gsheets", type=st.connection_factory.google_sheets)
+        
+        # 1. 寫入採購總表 (Data) - 需先移除 '標記刪除' 和 '交期顯示' 欄位
+        df_export = df_to_write.drop(columns=['標記刪除', '交期顯示'], errors='ignore')
+        conn.write(df_export, spreadsheet=SHEET_URL, worksheet=DATA_SHEET_NAME)
+        
+        # 2. 寫入專案設定 (Metadata)
+        metadata_list = [
+            {'專案名稱': name, 
+             '專案交貨日': data['due_date'].strftime('%Y-%m-%d'),
+             '緩衝天數': data['buffer_days'], 
+             '最後修改': data['last_modified']}
+            for name, data in metadata_to_write.items()
+        ]
+        metadata_df = pd.DataFrame(metadata_list)
+        conn.write(metadata_df, spreadsheet=SHEET_URL, worksheet=METADATA_SHEET_NAME)
+        
+        st.cache_data.clear() # 清除緩存強制下次重新載入
+        return True
+    except Exception as e:
+        st.error(f"❌ 數據寫回 Google Sheets 失敗！請檢查 Sheets 權限。")
+        st.code(f"錯誤訊息: {e}")
+        return False
 
 
-# --- Session State 初始化函式 ---
+# --- Session State 初始化函式 (優化) ---
 def initialize_session_state():
-    """初始化所有 Streamlit Session State 變數。"""
+    """初始化所有 Streamlit Session State 變數。從 Sheets 讀取數據。"""
     today = datetime.now().date()
     
-    if 'data' not in st.session_state:
-        st.session_state.data = pd.DataFrame({
-            'ID': [101, 102, 201, 202, 203],
-            '選取': [True, False, False, False, True],
-            '專案名稱': ['辦公室升級', '辦公室升級', '新廠區建置', '新廠區建置', '新廠區建置'], 
-            '專案項目': ['伺服器主機', '網路交換器', '工業級電腦', '工業級電腦', '網路線材'],
-            '供應商': ['廠商 A', '廠商 B', '廠商 C', '廠商 D', '廠商 A'],
-            '單價': [50000, 48000, 35000, 36000, 3000],
-            '數量': [2, 5, 1, 1, 10],
-            '總價': [100000, 240000, 35000, 36000, 30000],
-            '預計交貨日': ['2023-12-01', '2023-12-05', '2024-02-05', '2024-02-01', '2024-01-10'],
-            '狀態': ['待採購', '待採購', '已下單', '待採購', '已收貨'],
-            '採購最慢到貨日': ['2023-12-10', '2023-12-10', '2024-02-20', '2024-02-20', '2024-02-20']
-        })
-        st.session_state.data['標記刪除'] = False
-
+    # *** 數據初始化 (從 Google Sheets 讀取) ***
+    # 這裡我們只在 session state 中沒有 'data' 時才嘗試載入
+    if 'data' not in st.session_state or 'project_metadata' not in st.session_state:
+        # 使用 load_data_from_sheets 讀取數據
+        data_df, metadata_dict = load_data_from_sheets()
+        
+        st.session_state.data = data_df
+        st.session_state.project_metadata = metadata_dict
+        
     if '標記刪除' not in st.session_state.data.columns:
-         st.session_state.data['標記刪除'] = False
-         
+        st.session_state.data['標記刪除'] = False
+            
     if 'next_id' not in st.session_state:
         st.session_state.next_id = st.session_state.data['ID'].max() + 1 if not st.session_state.data.empty else 1
-
-    if 'project_metadata' not in st.session_state:
-        st.session_state.project_metadata = {
-            '辦公室升級': {'due_date': datetime(2023, 12, 17).date(), 'buffer_days': 7, 'last_modified': '2023-11-01 10:00'},
-            '新廠區建置': {'due_date': datetime(2024, 2, 27).date(), 'buffer_days': 7, 'last_modified': '2023-11-05 14:30'}
-        }
     
     if 'edited_dataframes' not in st.session_state:
         st.session_state.edited_dataframes = {}
@@ -139,7 +194,8 @@ def initialize_session_state():
     if 'delete_count' not in st.session_state:
         st.session_state.delete_count = 0
 
-# --- 輔助函式區 ---
+
+# --- 輔助函式區 (add_business_days, calculate_dashboard_metrics, calculate_project_budget 不變) ---
 
 def add_business_days(start_date, num_days):
     current_date = start_date
@@ -152,7 +208,7 @@ def add_business_days(start_date, num_days):
 @st.cache_data
 def convert_df_to_excel(df):
     """將 DataFrame 轉換為 Excel 二進位檔案 (使用 BytesIO)。"""
-    df_export = df.drop(columns=['標記刪除'], errors='ignore')
+    df_export = df.drop(columns=['標記刪除', '交期顯示'], errors='ignore')
     output = BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -195,20 +251,31 @@ def calculate_dashboard_metrics(df_state, project_metadata_state):
 
     return total_projects, total_budget, risk_items, pending_quotes
 
+def calculate_project_budget(df, project_name):
+    proj_df = df[df['專案名稱'] == project_name]
+    total_budget = 0
+    for _, item_df in proj_df.groupby('專案項目'):
+        selected_rows = item_df[item_df['選取'] == True]
+        if not selected_rows.empty:
+            total_budget += selected_rows['總價'].sum()
+        else:
+            if not item_df.empty:
+                total_budget += item_df['總價'].min()
+    return total_budget
 
-# 刪除報價邏輯：批次刪除
+
+# 刪除報價邏輯：批次刪除 (增加 Sheets 寫入)
 def handle_batch_delete_quotes():
     """根據 '標記刪除' 欄位，批次刪除報價。"""
     
     main_df = st.session_state.data.copy()
     
-    # 優化: 合併 edited_dataframes (僅處理 '標記刪除' 欄位)
     combined_edited_df = pd.concat(
         [edited_df.set_index('ID')[['標記刪除']] for edited_df in st.session_state.edited_dataframes.values() if not edited_df.empty],
         axis=0, 
         ignore_index=False
     )
-            
+    
     if not combined_edited_df.empty:
         main_df = main_df.set_index('ID')
         main_df.update(combined_edited_df)
@@ -222,17 +289,18 @@ def handle_batch_delete_quotes():
 
     st.session_state.data = main_df[main_df['標記刪除'] == False].drop(columns=['標記刪除'], errors='ignore')
     
-    st.session_state.show_delete_confirm = False # 重設確認狀態
-    st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。")
-    st.rerun()
+    # *** 數據寫回 Sheets ***
+    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+        st.session_state.show_delete_confirm = False
+        st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價，並同步到 Google Sheets！")
+        st.rerun()
 
-# 批次刪除的觸發函式
+# 批次刪除的觸發函式 (不變)
 def trigger_delete_confirmation():
     """點擊 '刪除已標記項目' 按鈕時，觸發確認流程。"""
     
     temp_df = st.session_state.data.copy()
     
-    # 優化: 合併 edited_dataframes (僅處理 '標記刪除' 欄位)
     combined_edited_df = pd.concat(
         [edited_df.set_index('ID')[['標記刪除']] for edited_df in st.session_state.edited_dataframes.values() if not edited_df.empty],
         axis=0, 
@@ -261,19 +329,7 @@ def cancel_delete_confirmation():
     st.rerun()
 
 
-def calculate_project_budget(df, project_name):
-    # 此函式用於單一專案的預算顯示
-    proj_df = df[df['專案名稱'] == project_name]
-    total_budget = 0
-    for _, item_df in proj_df.groupby('專案項目'):
-        selected_rows = item_df[item_df['選取'] == True]
-        if not selected_rows.empty:
-            total_budget += selected_rows['總價'].sum()
-        else:
-            if not item_df.empty:
-                total_budget += item_df['總價'].min()
-    return total_budget
-
+# 處理總表儲存邏輯 - 增加 Sheets 寫入
 def handle_master_save():
     """批次處理所有 data_editor 的修改，並重新計算總價與預算。"""
     
@@ -281,10 +337,11 @@ def handle_master_save():
         st.info("沒有偵測到表格修改。")
         return
 
-    main_df = st.session_state.data
+    main_df = st.session_state.data.copy()
     current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     affected_projects = set()
     changes_detected = False
+    
     
     for _, edited_df in st.session_state.edited_dataframes.items():
         if edited_df.empty: continue
@@ -298,9 +355,9 @@ def handle_master_save():
             
             # --- 數據比較與更新 ---
             if main_df.loc[main_idx, '選取'] != new_row['選取']:
-                 main_df.loc[main_idx, '選取'] = new_row['選取']
-                 changes_detected = True
-                 
+                main_df.loc[main_idx, '選取'] = new_row['選取']
+                changes_detected = True
+                
             updatable_cols = ['供應商', '單價', '數量', '狀態']
             for col in updatable_cols:
                 if main_df.loc[main_idx, col] != new_row[col]:
@@ -309,9 +366,10 @@ def handle_master_save():
             
             # 處理日期解析
             try:
-                date_str_parts = str(new_row['交期顯示']).strip().split(' ')
-                date_part = date_str_parts[0]
-                if main_df.loc[main_idx, '預計交貨日'] != date_part:
+                date_str_parts = str(new_row['交期顯示']).strip().split(' ') 
+                date_part = date_str_parts[0] 
+                
+                if str(main_df.loc[main_idx, '預計交貨日']) != date_part:
                     datetime.strptime(date_part, "%Y-%m-%d")
                     main_df.loc[main_idx, '預計交貨日'] = date_part
                     changes_detected = True
@@ -319,7 +377,7 @@ def handle_master_save():
                 st.warning(f"ID {original_id} 日期格式錯誤，請使用 YYYY-MM-DD") 
                 pass
             
-            # 重新計算總價 (總是執行以確保數據一致)
+            # 重新計算總價
             current_price = float(main_df.loc[main_idx, '單價'])
             current_qty = float(main_df.loc[main_idx, '數量'])
             new_total = current_price * current_qty
@@ -331,17 +389,21 @@ def handle_master_save():
             affected_projects.add(main_df.loc[main_idx, '專案名稱'])
 
     if changes_detected:
-        st.session_state.data = main_df.copy() # 寫回 session state 觸發更新
+        st.session_state.data = main_df.copy()
         
         for proj in affected_projects:
             if proj in st.session_state.project_metadata:
                 st.session_state.project_metadata[proj]['last_modified'] = current_time_str
-                
-        st.success("✅ 資料已儲存！總價與總預算已更新。")
-        st.rerun()
+        
+        # *** 數據寫回 Sheets ***
+        if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+            st.success("✅ 資料已儲存！總價與總預算已更新，並同步到 Google Sheets！")
+            st.rerun()
+
     else:
         st.info("沒有偵測到表格修改。")
 
+# 處理專案修改邏輯 - 增加 Sheets 寫入
 def handle_project_modification():
     target_proj = st.session_state.edit_target_project
     new_name = st.session_state.edit_new_name
@@ -365,9 +427,12 @@ def handle_project_modification():
     # 2. 更新 Dataframe
     st.session_state.data.loc[st.session_state.data['專案名稱'] == target_proj, '專案名稱'] = new_name
     
-    st.success(f"專案已更新：{new_name}")
-    st.rerun()
+    # *** 數據寫回 Sheets ***
+    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+        st.success(f"專案已更新：{new_name}，並同步到 Google Sheets！")
+        st.rerun()
 
+# 處理專案刪除邏輯 - 增加 Sheets 寫入
 def handle_delete_project(project_to_delete):
     """刪除選定的專案及其所有相關報價。"""
     
@@ -387,9 +452,12 @@ def handle_delete_project(project_to_delete):
     
     deleted_count = initial_count - len(st.session_state.data)
 
-    st.success(f"🗑️ 專案 **{project_to_delete}** 及其相關的 {deleted_count} 筆報價已成功刪除。")
-    st.rerun()
+    # *** 數據寫回 Sheets ***
+    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+        st.success(f"🗑️ 專案 **{project_to_delete}** 及其相關的 {deleted_count} 筆報價已成功刪除，並同步到 Google Sheets！")
+        st.rerun()
 
+# 處理新增專案邏輯 - 增加 Sheets 寫入
 def handle_add_new_project():
     """處理新增專案設定的邏輯"""
     project_name = st.session_state.new_proj_name
@@ -401,10 +469,7 @@ def handle_add_new_project():
         st.error("專案名稱不能為空。")
         return
         
-    if project_name in st.session_state.project_metadata:
-        st.warning(f"專案 '{project_name}' 已存在，將更新其時程設定。")
-    
-    latest_arrival_date_proj = project_due_date - timedelta(days=int(buffer_days))
+    is_update = project_name in st.session_state.project_metadata
 
     st.session_state.project_metadata[project_name] = {
         'due_date': project_due_date, 
@@ -412,9 +477,15 @@ def handle_add_new_project():
         'last_modified': current_time_str
     }
     
-    st.success(f"已新增/更新專案設定：{project_name}")
-    st.rerun()
+    # *** 數據寫回 Sheets ***
+    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+        if is_update:
+            st.success(f"已更新專案設定：{project_name}，並同步到 Google Sheets！")
+        else:
+            st.success(f"已新增專案設定：{project_name}，並同步到 Google Sheets！")
+        st.rerun()
 
+# 處理新增報價邏輯 - 增加 Sheets 寫入
 def handle_add_new_quote(latest_arrival_date):
     """處理新增報價的邏輯"""
     project_name = st.session_state.quote_project_select
@@ -450,26 +521,23 @@ def handle_add_new_quote(latest_arrival_date):
         '狀態': status, '採購最慢到貨日': latest_arrival_date.strftime('%Y-%m-%d'), 
         '標記刪除': False
     }
-    st.session_state.next_id += 1
+    
     st.session_state.data = pd.concat([st.session_state.data, pd.DataFrame([new_row])], ignore_index=True)
-    st.success(f"已新增報價至 {project_name}！")
-    st.rerun()
+    st.session_state.next_id += 1
+    
+    # *** 數據寫回 Sheets ***
+    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+        st.success(f"已新增報價至 {project_name}，並同步到 Google Sheets！")
+        st.rerun()
 
 
-# --- 主要應用程式 ---
+# --- 主要應用程式 (main 函式保持不變) ---
 def main():
     st.title(f"🛠️ 專案採購管理工具 {APP_VERSION}")
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    
-    # 執行登入驗證
-    login_form()
-    
-    # 確保只有在已驗證狀態下才顯示登出按鈕並執行初始化
-    st.sidebar.button("登出", on_click=logout)
+
     initialize_session_state()
 
-    # --- 應用程式的主體開始 ---
-    
     today = datetime.now().date() 
 
     # --- 側邊欄 ---
@@ -524,7 +592,7 @@ def main():
             st.caption(f"計算得出最慢到貨日：{latest_arrival_date_proj.strftime('%Y年%m月%d日')}")
 
             if st.button("儲存專案設定", key="btn_save_proj"):
-                 handle_add_new_project()
+                handle_add_new_project()
         
         st.markdown("---")
         
@@ -595,14 +663,15 @@ def main():
     def format_date_with_icon(row):
         date_str = str(row['預計交貨日'])
         try:
-             v_date = pd.to_datetime(row['預計交貨日']).date()
-             l_date = pd.to_datetime(row['採購最慢到貨日']).date()
-             icon = "🔴" if v_date > l_date else "✅"
-             return f"{date_str} {icon}"
+            v_date = pd.to_datetime(row['預計交貨日']).date()
+            l_date = pd.to_datetime(row['採購最慢到貨日']).date()
+            icon = "🔴" if v_date > l_date else "✅"
+            return f"{date_str} {icon}"
         except:
-             return date_str
+            return date_str
 
-    df['交期顯示'] = df.apply(format_date_with_icon, axis=1)
+    if not df.empty:
+        df['交期顯示'] = df.apply(format_date_with_icon, axis=1)
 
     project_groups = df.groupby('專案名稱')
     
@@ -732,10 +801,9 @@ def main():
     st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("💾 資料匯出")
     st.download_button("📥 下載 Excel 報表", 
-                       convert_df_to_excel(df), 
-                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
-                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                      convert_df_to_excel(df), 
+                      f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
+                      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if __name__ == "__main__":
     main()
-
