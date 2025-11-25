@@ -1,3 +1,7 @@
+# --- 核心依賴項 ---
 streamlit
 pandas
 openpyxl
+
+# --- Google Sheets 依賴項 ---
+streamlit-gsheets
