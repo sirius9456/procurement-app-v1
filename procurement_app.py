@@ -380,7 +380,7 @@ def main():
     st.subheader("🛡️ 專案採購管理工具 - 登入驗證") 
 
     # --- 2. 顯示登入表單 ---
-    name, authentication_status, username = authenticator.login('Login', 'main')
+    name, authentication_status, username = authenticator.login('Login', 'sidebar')
 
     # --- 3. 檢查登入狀態並執行應用程式 ---
     if st.session_state["authentication_status"]:
@@ -388,9 +388,8 @@ def main():
         
         # 側邊欄顯示登出按鈕和歡迎訊息
         with st.sidebar:
-            # 登出按鈕放在 sidebar
-            st.sidebar.markdown("---") # 添加分隔線
-            authenticator.logout('登出', 'main') # 保持在主頁面顯示登出
+            # 登出按鈕也放在 sidebar
+            authenticator.logout('Logout', 'sidebar') 
             st.sidebar.write(f'歡迎, {st.session_state["name"]}')
 
         # 執行應用程式核心邏輯
@@ -406,6 +405,7 @@ def main():
 # --- 程式進入點 ---
 if __name__ == "__main__":
     main()
+
 
 
 
