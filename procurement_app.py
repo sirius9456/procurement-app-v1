@@ -2,36 +2,35 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from io import BytesIO
-import os # 新增: 導入 os 模組用於讀取環境變數
+import os 
+import json # 新增: 用於解析 JSON 憑證
+import gspread # 新增: Google Sheets 底層庫
 
 # --- 應用程式設定 ---
-APP_VERSION = "v2.0.0 (Google Sheets Beta)" # 版本更新為 v2.0.0
+APP_VERSION = "v2.1.0 (Gspread Direct)" # 版本更新為 v2.1.0
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
 
-# --- 數據源配置 (GCP/本地通用配置) ---
-# 檢查環境變數 GCE_SHEET_URL，如果不存在，則使用 st.secrets (用於 Streamlit Cloud)
+# --- 數據源配置 (GCE/本地通用配置) ---
+# 檢查環境變數 GCE_SHEET_URL
 if "GCE_SHEET_URL" in os.environ:
     SHEET_URL = os.environ["GCE_SHEET_URL"]
     
-    # GCE 部署時，從環境變數讀取憑證檔案路徑
+    # GCE 部署時，從 systemd 環境變數讀取憑證檔案路徑
     try:
-        # GSHEETS_CREDENTIALS_PATH 是你在 systemd 服務檔案中設置的環境變數
         GSHEETS_CREDENTIALS = os.environ["GSHEETS_CREDENTIALS_PATH"] 
     except KeyError:
-        # 如果在 GCE 環境中找不到路徑，報錯並使用 None (讓連接器使用預設行為)
         st.error("❌ 錯誤：在 GCE 環境中未找到 GSHEETS_CREDENTIALS_PATH 環境變數。")
         GSHEETS_CREDENTIALS = None 
         
 else:
-    # Streamlit Cloud 或本地 .secrets 部署
-    # 這裡假設你在 .streamlit/secrets.toml 中有一個 app_config 區塊
+    # Streamlit Cloud 或本地 .secrets 部署 (備用邏輯，GCE 部署主要使用 Environment 變數)
     try:
         SHEET_URL = st.secrets["app_config"]["sheet_url"]
+        GSHEETS_CREDENTIALS = None # 在 Streamlit Cloud 上，連接器會自動處理
     except KeyError:
-        st.error("❌ 錯誤：請在 secrets.toml 檔案中配置 [app_config] sheet_url。")
         SHEET_URL = None
-    GSHEETS_CREDENTIALS = None # st.connection 會自動處理 st.secrets
-
+        GSHEETS_CREDENTIALS = None
+        
 DATA_SHEET_NAME = "採購總表"     # 包含報價數據的工作表名稱
 METADATA_SHEET_NAME = "專案設定" # 包含專案設定的工作表名稱
 
@@ -39,7 +38,7 @@ METADATA_SHEET_NAME = "專案設定" # 包含專案設定的工作表名稱
 # 設定頁面標題與寬度
 st.set_page_config(page_title=f"專案採購小幫手 {APP_VERSION}", layout="wide")
 
-# --- CSS 樣式修正 (不變) ---
+# --- CSS 樣式修正 (保持不變) ---
 CUSTOM_CSS = """
 <style>
 /* 1. 基礎樣式與顏色 */
@@ -72,79 +71,93 @@ li[aria-selected="true"] { background-color: #FF4B4B !important; color: white !i
 </style>
 """
 
-# --- 數據讀取與寫入函式 (核心修改) ---
+# --- 數據讀取與寫入函式 (核心修改: 使用 gspread) ---
 
-@st.cache_data(ttl=600, show_spinner="連線 Google Sheets...") # 緩存數據，每 10 分鐘檢查一次 Sheets
+@st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
 def load_data_from_sheets():
-    """使用 st.connection 讀取 Google Sheets 中的採購總表和專案設定。"""
+    """直接使用 gspread 讀取 Google Sheets 中的數據。"""
     
     if not SHEET_URL:
-        st.stop() # 如果 URL 為空，則停止運行
-    
+        st.info("❌ Google Sheets URL 尚未配置。使用空的數據結構。")
+        empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '標記刪除'])
+        return empty_data, {}
+
     try:
-        # 根據部署環境動態調整連接器參數
-        if GSHEETS_CREDENTIALS and os.path.exists(GSHEETS_CREDENTIALS):
-            # GCE 模式: 使用憑證檔案路徑 (在 systemd 中設定)
-            conn = st.connection("gsheets", type=st.connection_factory.google_sheets, 
-                                 credentials=GSHEETS_CREDENTIALS) 
-        else:
-            # Streamlit Cloud/本地模式: 使用 st.secrets
-            conn = st.connection("gsheets", type=st.connection_factory.google_sheets)
+        # --- 1. 授權與認證 ---
+        # 憑證檔案路徑必須存在
+        if not GSHEETS_CREDENTIALS or not os.path.exists(GSHEETS_CREDENTIALS):
+             st.error(f"❌ 憑證錯誤：找不到憑證檔案 {GSHEETS_CREDENTIALS}")
+             raise FileNotFoundError("憑證檔案不存在或路徑錯誤")
+             
+        # 從憑證檔案授權 gspread
+        gc = gspread.service_account(filename=GSHEETS_CREDENTIALS)
         
-        # 1. 讀取採購總表 (Data)
-        data_df = conn.read(spreadsheet=SHEET_URL, worksheet=DATA_SHEET_NAME, ttl=5)
+        # 打開試算表
+        sh = gc.open_by_url(SHEET_URL)
         
+        # --- 2. 讀取採購總表 (Data) ---
+        data_ws = sh.worksheet(DATA_SHEET_NAME)
+        data_records = data_ws.get_all_records()
+        data_df = pd.DataFrame(data_records)
+
         # 數據類型轉換與處理
         data_df = data_df.astype({
             'ID': 'Int64', '選取': 'bool', '單價': 'float', '數量': 'Int64', '總價': 'float'
         })
-        # 確保 '標記刪除' 欄位存在
         if '標記刪除' not in data_df.columns:
             data_df['標記刪除'] = False
+
+        # --- 3. 讀取專案設定 (Metadata) ---
+        metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
+        metadata_records = metadata_ws.get_all_records()
         
-        # 2. 讀取專案設定 (Metadata)
-        metadata_df = conn.read(spreadsheet=SHEET_URL, worksheet=METADATA_SHEET_NAME, ttl=5)
-        
-        # 轉換為 dictionary 格式
         project_metadata = {}
-        if not metadata_df.empty:
-            for index, row in metadata_df.iterrows():
+        if metadata_records:
+            for row in metadata_records:
+                # 確保日期格式正確
+                try:
+                    due_date = datetime.strptime(str(row['專案交貨日']), '%Y-%m-%d').date()
+                except ValueError:
+                    due_date = datetime.now().date()
+                    
                 project_metadata[row['專案名稱']] = {
-                    'due_date': datetime.strptime(str(row['專案交貨日']), '%Y-%m-%d').date(),
+                    'due_date': due_date,
                     'buffer_days': int(row['緩衝天數']),
                     'last_modified': str(row['最後修改'])
                 }
 
+        st.success("✅ 數據已從 Google Sheets 載入！")
         return data_df, project_metadata
 
     except Exception as e:
-        # 如果載入失敗，我們將使用空白 DataFrame 防止應用程式崩潰
-        st.error(f"❌ 數據載入失敗！請檢查 Google Sheets 憑證、URL/工作表名稱和 API 權限。")
+        st.error(f"❌ 數據載入失敗！請檢查 Sheets 分享權限、工作表名稱或憑證檔案。")
         st.code(f"錯誤訊息: {e}")
         
         # 設置空的 DataFrame 結構以防止後續程式碼崩潰
         empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '標記刪除'])
-        empty_meta = {}
         st.session_state.data_load_failed = True
-        return empty_data, empty_meta
+        return empty_data, {}
+
 
 def write_data_to_sheets(df_to_write, metadata_to_write):
-    """將採購總表和專案設定寫回 Google Sheets。"""
-    if st.session_state.get('data_load_failed', False):
-        st.warning("數據載入失敗，已禁用寫入 Sheets。")
+    """直接使用 gspread 寫回 Google Sheets。"""
+    if st.session_state.get('data_load_failed', False) or not SHEET_URL:
+        st.warning("數據載入失敗或 URL 未配置，已禁用寫入 Sheets。")
         return False
         
     try:
-        if GSHEETS_CREDENTIALS and os.path.exists(GSHEETS_CREDENTIALS):
-            conn = st.connection("gsheets", type=st.connection_factory.google_sheets, credentials=GSHEETS_CREDENTIALS) 
-        else:
-            conn = st.connection("gsheets", type=st.connection_factory.google_sheets)
+        # --- 1. 授權與認證 ---
+        gc = gspread.service_account(filename=GSHEETS_CREDENTIALS)
+        sh = gc.open_by_url(SHEET_URL)
         
-        # 1. 寫入採購總表 (Data) - 需先移除 '標記刪除' 和 '交期顯示' 欄位
+        # --- 2. 寫入採購總表 (Data) ---
         df_export = df_to_write.drop(columns=['標記刪除', '交期顯示'], errors='ignore')
-        conn.write(df_export, spreadsheet=SHEET_URL, worksheet=DATA_SHEET_NAME)
+        data_ws = sh.worksheet(DATA_SHEET_NAME)
+        # 清除舊內容並寫入新的 DataFrame (包括標題行)
+        data_ws.clear()
+        data_ws.update([df_export.columns.values.tolist()] + df_export.values.tolist())
         
-        # 2. 寫入專案設定 (Metadata)
+        # --- 3. 寫入專案設定 (Metadata) ---
         metadata_list = [
             {'專案名稱': name, 
              '專案交貨日': data['due_date'].strftime('%Y-%m-%d'),
@@ -153,13 +166,15 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
             for name, data in metadata_to_write.items()
         ]
         metadata_df = pd.DataFrame(metadata_list)
-        conn.write(metadata_df, spreadsheet=SHEET_URL, worksheet=METADATA_SHEET_NAME)
+        metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
+        metadata_ws.clear()
+        metadata_ws.update([metadata_df.columns.values.tolist()] + metadata_df.values.tolist())
         
-        st.cache_data.clear() # 清除緩存強制下次重新載入
+        st.cache_data.clear()
         return True
     except Exception as e:
-        st.error(f"❌ 數據寫回 Google Sheets 失敗！請檢查 Sheets 權限。")
-        st.code(f"錯誤訊息: {e}")
+        st.error(f"❌ 數據寫回 Google Sheets 失敗！")
+        st.code(f"寫入錯誤訊息: {e}")
         return False
 
 
@@ -169,9 +184,7 @@ def initialize_session_state():
     today = datetime.now().date()
     
     # *** 數據初始化 (從 Google Sheets 讀取) ***
-    # 這裡我們只在 session state 中沒有 'data' 時才嘗試載入
     if 'data' not in st.session_state or 'project_metadata' not in st.session_state:
-        # 使用 load_data_from_sheets 讀取數據
         data_df, metadata_dict = load_data_from_sheets()
         
         st.session_state.data = data_df
@@ -195,7 +208,7 @@ def initialize_session_state():
         st.session_state.delete_count = 0
 
 
-# --- 輔助函式區 (add_business_days, calculate_dashboard_metrics, calculate_project_budget 不變) ---
+# --- 輔助函式區 (add_business_days, convert_df_to_excel, calculate_dashboard_metrics, calculate_project_budget 保持不變) ---
 
 def add_business_days(start_date, num_days):
     current_date = start_date
@@ -531,16 +544,21 @@ def handle_add_new_quote(latest_arrival_date):
         st.rerun()
 
 
-# --- 主要應用程式 (main 函式保持不變) ---
+# --- 主要應用程式 (main 函式) ---
 def main():
     st.title(f"🛠️ 專案採購管理工具 {APP_VERSION}")
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
     initialize_session_state()
 
+    # 如果數據載入失敗，顯示警告並停止進一步操作
+    if st.session_state.get('data_load_failed', False):
+        st.warning("應用程式無法從 Google Sheets 載入數據，請檢查上方錯誤訊息。")
+        st.stop()
+        
     today = datetime.now().date() 
 
-    # --- 側邊欄 ---
+    # --- 側邊欄 (省略不變的 UI 邏輯) ---
     with st.sidebar:
         
         # --- 區塊 1: 修改/刪除專案 ---
@@ -564,7 +582,7 @@ def main():
                 if operation == "修改專案資訊":
                     st.markdown("##### ✏️ 專案資訊修改")
                     st.text_input("新專案名稱", value=target_proj, key="edit_new_name")
-                    st.date_input("新專案交貨日", value=current_meta['due_date'], key="edit_new_date")
+                    st.date_input("新專案交貨日", value=current_meta.get('due_date', today), key="edit_new_date")
                     
                     if st.button("確認修改專案", type="primary"):
                         handle_project_modification()
@@ -581,7 +599,7 @@ def main():
         
         st.markdown("---")
         
-        # --- 區塊 2 & 3 (不變) ---
+        # --- 區塊 2 & 3 (新增/新增報價邏輯) ---
         with st.expander("➕ 新增/設定專案時程", expanded=False):
             st.text_input("專案名稱 (Project Name)", key="new_proj_name")
             
