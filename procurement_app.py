@@ -380,7 +380,10 @@ def main():
     st.subheader("🛡️ 專案採購管理工具 - 登入驗證") 
 
     # --- 2. 顯示登入表單 ---
-    name, authentication_status, username = authenticator.login('Login')
+    name, authentication_status, username = authenticator.login(
+    form_name='Login', 
+    location='main'
+)
 
     # --- 3. 檢查登入狀態並執行應用程式 ---
     if st.session_state["authentication_status"]:
@@ -406,4 +409,5 @@ def main():
 # --- 程式進入點 ---
 if __name__ == "__main__":
     main()
+
 
