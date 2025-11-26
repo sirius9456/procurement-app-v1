@@ -4,4 +4,5 @@ pandas
 openpyxl
 
 # --- Google Sheets 依賴項 ---
-streamlit-gsheets
+gspread
+oauth2client
