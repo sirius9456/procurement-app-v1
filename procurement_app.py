@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 
 # --- 應用程式設定 ---
-APP_VERSION = "v2.1.6 (Final Integrated UI)"
+APP_VERSION = "v2.1.7 (Optimization Test)" # 版本更新為測試版
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
 
 # --- 數據源配置 (安全與 Gspread 連線) ---
@@ -160,6 +160,7 @@ def load_data_from_sheets():
         return data_df, project_metadata
 
     except Exception as e:
+        # 記錄完整的錯誤追溯到 systemd journal
         logging.exception("Google Sheets 數據載入時發生致命錯誤！") 
         
         st.error(f"❌ 數據載入失敗！請檢查 Sheets 分享權限、工作表名稱或憑證檔案。")
@@ -282,7 +283,7 @@ def calculate_project_budget(df, project_name):
     return total_budget
 
 
-# 專案交期自動計算邏輯 (V2.1.1 優化)
+# 專案交期自動計算邏輯 (V2.1.7 優化精簡)
 @st.cache_data(show_spinner=False)
 def calculate_latest_arrival_dates(df, metadata):
     """根據專案設定，計算每個採購項目的採購最慢到貨日。"""
@@ -293,25 +294,39 @@ def calculate_latest_arrival_dates(df, metadata):
     metadata_df = pd.DataFrame.from_dict(metadata, orient='index')
     metadata_df = metadata_df.reset_index().rename(columns={'index': '專案名稱'})
     
+    # 保持 due_date 的類型處理
     metadata_df['due_date'] = metadata_df['due_date'].apply(lambda x: pd.to_datetime(x).date())
     metadata_df['buffer_days'] = metadata_df['buffer_days'].astype(int)
 
     df = pd.merge(df, metadata_df[['專案名稱', 'due_date', 'buffer_days']], on='專案名稱', how='left')
-
-    df['due_date_dt'] = pd.to_datetime(df['due_date'])
-
-    df['採購最慢到貨日_NEW'] = (
-        df['due_date_dt'] - # 使用新的 datetime 欄位
+    
+    # 【程式碼精簡】: 直接轉換並執行減法運算，避免中間欄位
+    df['採購最慢到貨日_TEMP'] = (
+        pd.to_datetime(df['due_date']) - 
         df['buffer_days'].apply(lambda x: timedelta(days=x))
-    ).dt.strftime('%Y-%m-%d')
+    )
     
-    df['採購最慢到貨日'] = df['採購最慢到貨日_NEW']
+    df['採購最慢到貨日'] = df['採購最慢到貨日_TEMP'].dt.strftime('%Y-%m-%d')
     
-    df = df.drop(columns=['due_date', 'buffer_days', '採購最慢到貨日_NEW', 'due_date_dt'], errors='ignore') # 新增清理 'due_date_dt'
-    
+    # 清理輔助欄位並返回
+    df = df.drop(columns=['due_date', 'buffer_days', '採購最慢到貨日_TEMP'], errors='ignore')
     return df
 
-# --- UI 邏輯處理函式 (基於 V1.0.0 整合) ---
+
+# --- UI 邏輯處理函式 ---
+
+# 抽離寫入與重跑邏輯 (優化精簡)
+def save_and_rerun(df_to_save, metadata_to_save, success_message=""):
+    """將數據寫回 Sheets，並在成功後執行 st.rerun。"""
+    
+    if write_data_to_sheets(df_to_save, metadata_to_save):
+        st.session_state.edited_dataframes = {} # 清除編輯狀態
+        if success_message:
+            st.success(success_message)
+        st.rerun()
+        
+    pass
+
 
 def handle_master_save():
     """批次處理所有 data_editor 的修改，並重新計算總價與預算。"""
@@ -336,13 +351,10 @@ def handle_master_save():
             main_idx = idx_in_main[0]
             
             # --- 數據比較與更新 ---
-            if main_df.loc[main_idx, '選取'] != new_row['選取']:
-                 main_df.loc[main_idx, '選取'] = new_row['選取']
-                 changes_detected = True
-                 
-            updatable_cols = ['供應商', '單價', '數量', '狀態', '標記刪除'] # 新增標記刪除
+            # 簡化更新邏輯
+            updatable_cols = ['選取', '供應商', '單價', '數量', '狀態', '標記刪除']
             for col in updatable_cols:
-                if main_df.loc[main_idx, col] != new_row[col]:
+                if main_df.loc[main_idx, col] != new_row.get(col): # 使用 get 處理可能缺失的欄位
                     main_df.loc[main_idx, col] = new_row[col]
                     changes_detected = True
             
@@ -357,7 +369,7 @@ def handle_master_save():
             except:
                 pass
             
-            # 重新計算總價 (總是執行以確保數據一致)
+            # 重新計算總價
             current_price = float(main_df.loc[main_idx, '單價'])
             current_qty = float(main_df.loc[main_idx, '數量'])
             new_total = current_price * current_qty
@@ -376,17 +388,17 @@ def handle_master_save():
             if proj in st.session_state.project_metadata:
                 st.session_state.project_metadata[proj]['last_modified'] = current_time_str
                 
-        # 寫回 Google Sheets (V2.1.3 核心功能)
-        if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-            st.session_state.edited_dataframes = {} # 清除編輯狀態
-            st.success("✅ 資料已儲存！總價、總預算及 Google Sheets 已更新。")
-        
-        st.rerun()
+        # 使用精簡後的 save_and_rerun 函式
+        save_and_rerun(
+            st.session_state.data, 
+            st.session_state.project_metadata, 
+            success_message="✅ 資料已儲存！總價、總預算及 Google Sheets 已更新。"
+        )
+
     else:
         st.info("沒有偵測到表格修改。")
 
 
-# 刪除報價邏輯：批次刪除
 def handle_batch_delete_quotes():
     """根據 '標記刪除' 欄位，批次刪除報價。"""
     
@@ -414,14 +426,13 @@ def handle_batch_delete_quotes():
 
     st.session_state.data = main_df[main_df['標記刪除'] == False].drop(columns=['標記刪除'], errors='ignore')
     
-    # 寫回 Google Sheets
-    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.session_state.show_delete_confirm = False # 重設確認狀態
-        st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。Sheets 已更新。")
-    
-    st.rerun()
+    # 使用精簡後的 save_and_rerun 函式
+    save_and_rerun(
+        st.session_state.data, 
+        st.session_state.project_metadata, 
+        success_message=f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。Sheets 已更新。"
+    )
 
-# 批次刪除的觸發函式
 def trigger_delete_confirmation():
     """點擊 '刪除已標記項目' 按鈕時，觸發確認流程。"""
     
@@ -455,6 +466,7 @@ def cancel_delete_confirmation():
     st.session_state.show_delete_confirm = False
     st.rerun()
 
+
 def handle_project_modification():
     target_proj = st.session_state.edit_target_project
     new_name = st.session_state.edit_new_name
@@ -478,11 +490,12 @@ def handle_project_modification():
     # 2. 更新 Dataframe
     st.session_state.data.loc[st.session_state.data['專案名稱'] == target_proj, '專案名稱'] = new_name
     
-    # 寫回 Google Sheets
-    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.success(f"✅ 專案已更新：{new_name}。Sheets 已更新。")
-    
-    st.rerun()
+    # 使用精簡後的 save_and_rerun 函式
+    save_and_rerun(
+        st.session_state.data, 
+        st.session_state.project_metadata, 
+        success_message=f"✅ 專案已更新：{new_name}。Sheets 已更新。"
+    )
 
 def handle_delete_project(project_to_delete):
     """刪除選定的專案及其所有相關報價。"""
@@ -503,11 +516,12 @@ def handle_delete_project(project_to_delete):
     
     deleted_count = initial_count - len(st.session_state.data)
 
-    # 寫回 Google Sheets
-    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.success(f"✅ 專案 **{project_to_delete}** 及其相關的 {deleted_count} 筆報價已成功刪除。Sheets 已更新。")
-    
-    st.rerun()
+    # 使用精簡後的 save_and_rerun 函式
+    save_and_rerun(
+        st.session_state.data, 
+        st.session_state.project_metadata, 
+        success_message=f"✅ 專案 **{project_to_delete}** 及其相關的 {deleted_count} 筆報價已成功刪除。Sheets 已更新。"
+    )
 
 def handle_add_new_project():
     """處理新增專案設定的邏輯"""
@@ -529,11 +543,12 @@ def handle_add_new_project():
         'last_modified': current_time_str
     }
     
-    # 寫回 Google Sheets
-    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.success(f"✅ 已新增/更新專案設定：{project_name}。Sheets 已更新。")
-    
-    st.rerun()
+    # 使用精簡後的 save_and_rerun 函式
+    save_and_rerun(
+        st.session_state.data, 
+        st.session_state.project_metadata, 
+        success_message=f"✅ 已新增/更新專案設定：{project_name}。Sheets 已更新。"
+    )
 
 def handle_add_new_quote(latest_arrival_date):
     """處理新增報價的邏輯"""
@@ -573,34 +588,41 @@ def handle_add_new_quote(latest_arrival_date):
     st.session_state.next_id += 1
     st.session_state.data = pd.concat([st.session_state.data, pd.DataFrame([new_row])], ignore_index=True)
     
-    # 寫回 Google Sheets
-    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.success(f"✅ 已新增報價至 {project_name}！Sheets 已更新。")
-    
-    st.rerun()
+    # 使用精簡後的 save_and_rerun 函式
+    save_and_rerun(
+        st.session_state.data, 
+        st.session_state.project_metadata, 
+        success_message=f"✅ 已新增報價至 {project_name}！Sheets 已更新。"
+    )
 
 
-# --- Session State 初始化函式 (使用 Gspread 邏輯) ---
+# --- Session State 初始化函式 (優化精簡) ---
 def initialize_session_state():
     """初始化所有 Streamlit Session State 變數。從 Sheets 讀取數據。"""
     today = datetime.now().date()
     
-    if 'data' not in st.session_state or 'project_metadata' not in st.session_state:
+    # 1. 數據與元數據載入 (只在 session 首次啟動時執行)
+    if 'data' not in st.session_state:
         data_df, metadata_dict = load_data_from_sheets()
         
         st.session_state.data = data_df
         st.session_state.project_metadata = metadata_dict
         
+    # 2. 使用 setdefault 進行統一初始化
+    initial_values = {
+        'next_id': st.session_state.data['ID'].max() + 1 if not st.session_state.data.empty else 1,
+        'edited_dataframes': {},
+        'calculated_delivery_date': today,
+        'show_delete_confirm': False,
+        'delete_count': 0,
+    }
+    
+    for key, value in initial_values.items():
+        st.session_state.setdefault(key, value)
+        
+    # 確保 '標記刪除' 欄位存在
     if '標記刪除' not in st.session_state.data.columns:
         st.session_state.data['標記刪除'] = False
-            
-    if 'next_id' not in st.session_state:
-        st.session_state.next_id = st.session_state.data['ID'].max() + 1 if not st.session_state.data.empty else 1
-    
-    if 'edited_dataframes' not in st.session_state: st.session_state.edited_dataframes = {}
-    if 'calculated_delivery_date' not in st.session_state: st.session_state.calculated_delivery_date = today
-    if 'show_delete_confirm' not in st.session_state: st.session_state.show_delete_confirm = False
-    if 'delete_count' not in st.session_state: st.session_state.delete_count = 0
 
 
 # --- 主應用程式核心邏輯 (在登入成功後調用) ---
@@ -623,7 +645,7 @@ def run_app():
         
     today = datetime.now().date() 
 
-    # --- UI 核心邏輯開始 ---
+    # --- UI 核心邏輯開始 (所有 UI 內容) ---
     
     # 格式化日期顯示
     def format_date_with_icon(row):
@@ -642,7 +664,7 @@ def run_app():
     df = st.session_state.data
     project_groups = df.groupby('專案名稱')
     
-    # *** 側邊欄 UI 邏輯 (使用 with st.sidebar 區塊) ***
+    # *** 側邊欄 UI 邏輯 ***
     with st.sidebar:
         
         # 區塊 1: 修改/刪除專案
@@ -834,6 +856,24 @@ def run_app():
     st.markdown("---")
 
     # *** 專案 Expander 列表 ***
+    
+    # 格式化日期顯示 (重新定義以確保 local scope 可用)
+    def format_date_with_icon(row):
+        date_str = str(row['預計交貨日'])
+        try:
+            v_date = pd.to_datetime(row['預計交貨日']).date()
+            l_date = pd.to_datetime(row['採購最慢到貨日']).date()
+            icon = "🔴" if v_date > l_date else "✅"
+            return f"{date_str} {icon}"
+        except:
+            return date_str
+
+    if not st.session_state.data.empty:
+        st.session_state.data['交期顯示'] = st.session_state.data.apply(format_date_with_icon, axis=1)
+
+    df = st.session_state.data # 重新引用最新的數據
+    project_groups = df.groupby('專案名稱')
+    
     for proj_name, proj_data in project_groups:
         meta = st.session_state.project_metadata.get(proj_name, {})
         proj_budget = calculate_project_budget(df, proj_name)
@@ -911,4 +951,3 @@ def main():
         
 if __name__ == "__main__":
     main()
-
