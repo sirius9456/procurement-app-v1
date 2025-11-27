@@ -245,7 +245,7 @@ def main():
 
     # --- 2. 顯示登入表單 ---
     # 最終修正：只傳遞 form_name，繞過 Location 參數的庫版本問題
-    name, authentication_status, username = authenticator.login('Login')
+    name, authentication_status, username = authenticator.login('Login', 'MAIN')
 
     # --- 3. 檢查登入狀態並執行應用程式 ---
     if st.session_state["authentication_status"]:
@@ -254,7 +254,7 @@ def main():
         # 側邊欄顯示登出按鈕和歡迎訊息
         with st.sidebar:
             # 登出按鈕使用 'main' 作為 location，但因為在 with st.sidebar 內，所以會顯示在側邊欄
-            authenticator.logout('登出', 'main') 
+            authenticator.logout('登出', 'MAIN') # <-- 這裡也改為 'MAIN'
             st.sidebar.write(f'歡迎, {st.session_state["name"]}')
 
         # 執行應用程式核心邏輯
@@ -270,3 +270,4 @@ def main():
 # --- 程式進入點 ---
 if __name__ == "__main__":
     main()
+
