@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 
 # --- 應用程式設定 ---
-APP_VERSION = "v2.1.7 (Optimization Test)" # 版本更新為測試版
+APP_VERSION = "v2.1.8 (Final Optimized)" # 版本更新為最終優化版
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
 
 # --- 數據源配置 (安全與 Gspread 連線) ---
@@ -283,7 +283,7 @@ def calculate_project_budget(df, project_name):
     return total_budget
 
 
-# 專案交期自動計算邏輯 (V2.1.7 優化精簡)
+# 專案交期自動計算邏輯 (V2.1.8 優化精簡)
 @st.cache_data(show_spinner=False)
 def calculate_latest_arrival_dates(df, metadata):
     """根據專案設定，計算每個採購項目的採購最慢到貨日。"""
@@ -596,7 +596,7 @@ def handle_add_new_quote(latest_arrival_date):
     )
 
 
-# --- Session State 初始化函式 (V2.1.7 優化精簡) ---
+# --- Session State 初始化函式 (V2.1.8 優化精簡) ---
 def initialize_session_state():
     """初始化所有 Streamlit Session State 變數。從 Sheets 讀取數據。"""
     today = datetime.now().date()
@@ -608,7 +608,7 @@ def initialize_session_state():
         st.session_state.data = data_df
         st.session_state.project_metadata = metadata_dict
         
-    # 2. 使用 setdefault 進行統一初始化
+    # 2. 使用 setdefault 進行統一初始化 (程式碼精簡)
     next_id_val = st.session_state.data['ID'].max() + 1 if not st.session_state.data.empty else 1
     
     initial_values = {
@@ -647,7 +647,7 @@ def run_app():
         
     today = datetime.now().date() 
 
-    # --- UI 核心邏輯開始 (所有 UI 內容) ---
+    # --- UI 核心邏輯開始 ---
     
     # 格式化日期顯示
     def format_date_with_icon(row):
@@ -859,7 +859,7 @@ def run_app():
 
     # *** 專案 Expander 列表 ***
     
-    # 格式化日期顯示 (重新定義以確保 local scope 可用)
+    # 格式化日期顯示
     def format_date_with_icon(row):
         date_str = str(row['預計交貨日'])
         try:
