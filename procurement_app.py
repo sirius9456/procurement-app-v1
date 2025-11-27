@@ -596,7 +596,7 @@ def handle_add_new_quote(latest_arrival_date):
     )
 
 
-# --- Session State 初始化函式 (優化精簡) ---
+# --- Session State 初始化函式 (V2.1.7 優化精簡) ---
 def initialize_session_state():
     """初始化所有 Streamlit Session State 變數。從 Sheets 讀取數據。"""
     today = datetime.now().date()
@@ -609,8 +609,10 @@ def initialize_session_state():
         st.session_state.project_metadata = metadata_dict
         
     # 2. 使用 setdefault 進行統一初始化
+    next_id_val = st.session_state.data['ID'].max() + 1 if not st.session_state.data.empty else 1
+    
     initial_values = {
-        'next_id': st.session_state.data['ID'].max() + 1 if not st.session_state.data.empty else 1,
+        'next_id': next_id_val,
         'edited_dataframes': {},
         'calculated_delivery_date': today,
         'show_delete_confirm': False,
@@ -919,7 +921,7 @@ def run_app():
                     },
                     key=editor_key,
                     hide_index=True,
-                    use_container_width=True,
+                    # use_container_width=True, # 移除舊參數
                     height=150 + (len(item_data) * 35) if len(item_data) > 3 else 150,
                     disabled=is_locked
                 )
