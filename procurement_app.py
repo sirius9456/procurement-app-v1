@@ -298,14 +298,17 @@ def calculate_latest_arrival_dates(df, metadata):
 
     df = pd.merge(df, metadata_df[['專案名稱', 'due_date', 'buffer_days']], on='專案名稱', how='left')
 
+    df['due_date_dt'] = pd.to_datetime(df['due_date'])
+
     df['採購最慢到貨日_NEW'] = (
-        df['due_date'] - 
+        df['due_date_dt'] - # 使用新的 datetime 欄位
         df['buffer_days'].apply(lambda x: timedelta(days=x))
     ).dt.strftime('%Y-%m-%d')
     
     df['採購最慢到貨日'] = df['採購最慢到貨日_NEW']
     
-    df = df.drop(columns=['due_date', 'buffer_days', '採購最慢到貨日_NEW'], errors='ignore')
+    df = df.drop(columns=['due_date', 'buffer_days', '採購最慢到貨日_NEW', 'due_date_dt'], errors='ignore') # 新增清理 'due_date_dt'
+    
     return df
 
 # --- UI 邏輯處理函式 (基於 V1.0.0 整合) ---
@@ -908,3 +911,4 @@ def main():
         
 if __name__ == "__main__":
     main()
+
