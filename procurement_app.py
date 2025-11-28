@@ -821,7 +821,7 @@ def run_app():
     df = st.session_state.data
     project_groups = df.groupby('專案名稱')
     
-    # *** 側邊欄 UI 邏輯 *** with st.sidebar: # <--- 修正: 加上 with st.sidebar: 確保內容在側邊欄內
+    # *** 側邊欄 UI 邏輯 *** with st.sidebar: # 這裡的縮排已確保正確，與 run_app 內的頂層區塊對齊
         
         # 顯示登出按鈕 
         st.button("登出", on_click=logout, type="secondary")
