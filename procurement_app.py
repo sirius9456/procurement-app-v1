@@ -820,6 +820,137 @@ def run_app():
     df = st.session_state.data
     project_groups = df.groupby('專案名稱')
     
+    # *** 側邊欄 UI 邏輯 *** <--- 將功能移動到這裡，並添加登出按鈕
+    with st.sidebar:
+        
+        # 顯示登出按鈕 (已從 main() 移動到此處)
+        st.button("登出", on_click=logout, type="secondary")
+        st.markdown("---")
+
+        # 區塊 1: 修改/刪除專案
+        with st.expander("✏️ 修改/刪除專案資訊", expanded=False):
+            all_projects = sorted(list(st.session_state.project_metadata.keys()))
+            
+            if all_projects:
+                target_proj = st.selectbox("選擇目標專案", all_projects, key="edit_target_project")
+                
+                operation = st.selectbox(
+                    "選擇操作項目", 
+                    ("修改專案資訊", "刪除專案"), 
+                    key="project_operation_select",
+                    help="選擇 '刪除專案' 將永久移除專案及其所有報價。"
+                )
+                
+                st.markdown("---")
+                
+                current_meta = st.session_state.project_metadata.get(target_proj, {'due_date': today})
+                
+                if operation == "修改專案資訊":
+                    st.markdown("##### ✏️ 專案資訊修改")
+                    st.text_input("新專案名稱", value=target_proj, key="edit_new_name")
+                    st.date_input("新專案交貨日", value=current_meta['due_date'], key="edit_new_date")
+                    
+                    if st.button("確認修改專案", type="primary"):
+                        handle_project_modification()
+                
+                elif operation == "刪除專案":
+                    st.markdown("##### 🗑️ 專案刪除 (⚠️ 警告)")
+                    st.warning(f"您即將永久刪除專案 **{target_proj}** 及其所有相關報價資料。")
+                    
+                    if st.button(f"確認永久刪除 {target_proj}", type="secondary", help="此操作不可逆，將同時移除所有相關報價"):
+                        handle_delete_project(target_proj)
+                        
+            else: 
+                st.info("無專案可修改/刪除。請在下方新增專案。")
+        
+        st.markdown("---")
+        
+        # 區塊 2: 新增/設定專案時程
+        with st.expander("➕ 新增/設定專案時程", expanded=False):
+            st.text_input("專案名稱 (Project Name)", key="new_proj_name")
+            
+            project_due_date = st.date_input("專案交貨日 (Project Due Date)", value=today + timedelta(days=30), key="new_proj_due_date")
+            buffer_days = st.number_input("採購緩衝天數 (天)", min_value=0, value=7, key="new_proj_buffer_days")
+            
+            latest_arrival_date_proj = project_due_date - timedelta(days=int(buffer_days))
+            st.caption(f"計算得出最慢到貨日：{latest_arrival_date_proj.strftime('%Y年%m月%d日')}")
+
+            if st.button("儲存專案設定", key="btn_save_proj"):
+                handle_add_new_project()
+        
+        st.markdown("---")
+        
+        # 區塊 3: 新增報價 (新增 file_uploader)
+        with st.expander("➕ 新增報價", expanded=False):
+            all_projects_for_quote = sorted(list(st.session_state.project_metadata.keys()))
+            latest_arrival_date = today 
+            
+            if not all_projects_for_quote:
+                st.warning("請先在上方新增/設定專案時程。")
+                project_name = None
+            else:
+                project_name = st.selectbox("選擇目標專案", all_projects_for_quote, key="quote_project_select")
+                
+                current_meta = st.session_state.project_metadata.get(project_name, {'due_date': today, 'buffer_days': 7})
+                buffer_days = current_meta['buffer_days']
+                latest_arrival_date = current_meta['due_date'] - timedelta(days=int(buffer_days))
+
+                st.caption(f"專案最慢到貨日: {latest_arrival_date.strftime('%Y-%m-%d')}")
+
+            st.markdown("##### 採購項目選擇")
+            
+            unique_items = sorted(st.session_state.data['專案項目'].unique().tolist())
+            item_options = ['新增項目...'] + unique_items
+
+            selected_item = st.selectbox("選擇現有項目", item_options, key="quote_item_select")
+
+            item_name_to_use = None
+            if selected_item == '新增項目...':
+                item_name_to_use = st.text_input("輸入新的採購項目名稱", key="quote_item_new_input")
+            else:
+                item_name_to_use = selected_item
+            
+            st.session_state.item_name_to_use_final = item_name_to_use
+            
+            st.text_input("供應商名稱", key="quote_supplier")
+            st.number_input("單價 (TWD)", min_value=0, key="quote_price")
+            st.number_input("數量", min_value=1, value=1, key="quote_qty")
+            
+            st.markdown("##### 預計交貨日輸入")
+            date_input_type = st.radio("選擇輸入方式", ("1. 指定日期", "2. 自然日數", "3. 工作日數"), key="quote_date_type", horizontal=True)
+
+            if date_input_type == "1. 指定日期": 
+                final_delivery_date = st.date_input("選擇確切交貨日期", today, key="quote_delivery_date") 
+            
+            elif date_input_type == "2. 自然日數": 
+                num_days = st.number_input("自然日數", min_value=1, value=7, key="quote_num_days_input")
+                final_delivery_date = today + timedelta(days=int(num_days))
+                st.session_state.calculated_delivery_date = final_delivery_date 
+                
+            elif date_input_type == "3. 工作日數": 
+                num_b_days = st.number_input("工作日數", min_value=1, value=5, key="quote_num_b_days_input")
+                final_delivery_date = add_business_days(today, int(num_b_days))
+                st.session_state.calculated_delivery_date = final_delivery_date
+            
+            if date_input_type != "1. 指定日期":
+                final_delivery_date = st.session_state.calculated_delivery_date
+                st.caption(f"計算得出的交期：{final_delivery_date.strftime('%Y-%m-%d')}")
+
+            st.selectbox("目前狀態", STATUS_OPTIONS, key="quote_status")
+            
+            st.markdown("---")
+            st.markdown("##### 📎 上傳附件 (PDF/圖片)")
+            # 新增檔案上傳元件
+            uploaded_file = st.file_uploader(
+                "選取附件",
+                type=['pdf', 'jpg', 'jpeg', 'png'],
+                key="new_quote_file_uploader"
+            )
+
+            if st.button("新增資料", key="btn_add_quote"):
+                handle_add_new_quote(latest_arrival_date, uploaded_file)
+
+
     # *** 儀表板區塊 ***
     total_projects, total_budget, risk_items, pending_quotes = calculate_dashboard_metrics(df, st.session_state.project_metadata)
 
@@ -864,7 +995,7 @@ def run_app():
     # *** 批次操作區塊 ***
     col_save, col_delete = st.columns([0.8, 0.2])
     
-    is_locked = st.session_state.show_delete_confirm # <--- 修正: 舊的定義位置，現在需移除
+    is_locked = st.session_state.show_delete_confirm
     
     with col_save:
         if st.button("💾 儲存表格修改並計算總價/預算", type="primary", disabled=is_locked):
@@ -982,8 +1113,7 @@ def main():
     
     # --- 僅在驗證通過後執行後續程式碼 ---
     if st.session_state.authenticated:
-        # 顯示登出按鈕
-        st.sidebar.button("登出", on_click=logout) 
+        # 顯示登出按鈕 (已移動到 run_app 中的 with st.sidebar 區塊)
 
         # 執行應用程式核心邏輯
         run_app() 
