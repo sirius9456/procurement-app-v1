@@ -22,7 +22,8 @@ STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
 
 # --- Google Cloud Storage 配置 (請務必替換為您的儲存桶名稱) ---
 # ⚠️ WARNING: 請替換為您在 GCP 上建立的儲存桶名稱！
-GCS_BUCKET_NAME = "procurement-attachments-bucket" 
+# ⬇️⬇️⬇️ 請在這裡輸入您的實際 GCS 儲存桶名稱 ⬇️⬇️⬇️
+GCS_BUCKET_NAME = "procurement-attachments-bucket"  
 GCS_ATTACHMENT_FOLDER = "attachments"
 
 # --- 數據源配置 (安全與 Gspread 連線) ---
@@ -820,10 +821,9 @@ def run_app():
     df = st.session_state.data
     project_groups = df.groupby('專案名稱')
     
-    # *** 側邊欄 UI 邏輯 *** <--- 將功能移動到這裡，並添加登出按鈕
-    with st.sidebar:
+    # *** 側邊欄 UI 邏輯 *** with st.sidebar:
         
-        # 顯示登出按鈕 (已從 main() 移動到此處)
+        # 顯示登出按鈕 
         st.button("登出", on_click=logout, type="secondary")
         st.markdown("---")
 
@@ -1113,8 +1113,6 @@ def main():
     
     # --- 僅在驗證通過後執行後續程式碼 ---
     if st.session_state.authenticated:
-        # 顯示登出按鈕 (已移動到 run_app 中的 with st.sidebar 區塊)
-
         # 執行應用程式核心邏輯
         run_app() 
         
