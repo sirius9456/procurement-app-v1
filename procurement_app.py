@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 
 # --- 應用程式設定 ---
-APP_VERSION = "v2.2.0 (Attachment Preview Test)" # 版本更新為附件預覽測試版
+APP_VERSION = "v2.2.1 (Security Update - Signed URL)" # 版本更新為安全更新測試版
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
 
 # --- Google Cloud Storage 配置 (請務必替換為您的儲存桶名稱) ---
@@ -119,10 +119,10 @@ def login_form():
     st.stop() 
 
 
-# --- GCS 上傳函式 (新功能) ---
+# --- GCS 檔案服務函式 (安全更新 V2.2.1) ---
 
 def upload_attachment_to_gcs(file_obj, next_id):
-    """將檔案上傳到 GCS，並返回公開 URL。"""
+    """將檔案上傳到 GCS，不設置公開權限 (儲存桶保持私有)。"""
     if GCS_BUCKET_NAME == "procurement-attachments-bucket":
         st.warning("GCS 儲存桶名稱未設置。請修改 GCS_BUCKET_NAME 變數。")
         return None
@@ -143,14 +143,41 @@ def upload_attachment_to_gcs(file_obj, next_id):
         file_obj.seek(0) # 確保從檔案開頭讀取
         blob.upload_from_file(file_obj, content_type=file_obj.type)
         
-        # 設置權限為公開讀取 (需要儲存桶的 IAM 策略允許)
-        blob.make_public()
-
-        return blob.public_url
+        # ⚠️ CRITICAL: 移除 blob.make_public()，確保儲存桶是私有的。
+        
+        # 返回檔案的 GCS 存儲路徑 (gs://bucket/blob_name)，以便後續生成 Signed URL
+        return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
 
     except Exception as e:
-        logging.error(f"GCS 上傳失敗，請檢查 GCE 服務帳戶是否有 Storage Object Admin 權限: {e}")
+        logging.error(f"GCS 上傳失敗，請檢查 GCE 服務帳戶是否有 Storage Object Creator 權限: {e}")
         st.error("❌ 附件上傳失敗，請檢查 GCS 權限。")
+        return None
+
+def get_signed_attachment_url(gcs_uri):
+    """根據 GCS URI 生成一個有時效限制 (5 分鐘) 的簽章 URL。"""
+    if not gcs_uri.startswith("gs://"):
+        return gcs_uri # 如果已經是普通的 URL，直接返回
+    
+    try:
+        storage_client = storage.Client()
+        # 解析 URI 獲取 bucket 和 blob 名稱
+        parts = gcs_uri[5:].split('/', 1)
+        bucket_name = parts[0]
+        blob_name = parts[1]
+        
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        
+        # 生成簽章 URL，時效 5 分鐘
+        signed_url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=5),
+            method="GET"
+        )
+        return signed_url
+        
+    except Exception as e:
+        logging.error(f"生成 Signed URL 失敗: {e}")
         return None
 
 
@@ -370,10 +397,25 @@ def calculate_latest_arrival_dates(df, metadata):
 # --- UI 邏輯處理函式 (更新：支援附件URL) ---
 
 # 設置預覽 URL 的函式
-def set_preview_url(url):
-    st.session_state.preview_url = url
-    st.session_state.show_preview_modal = True
-    # 不需要 st.rerun()，因為 modal 在頂層，state 改變會被 run_app 處理
+def set_preview_url(gcs_uri):
+    """將 GCS URI 轉換為簽章 URL 並設置預覽狀態。"""
+    
+    if gcs_uri.startswith("gs://"):
+        signed_url = get_signed_attachment_url(gcs_uri)
+        if signed_url:
+            st.session_state.preview_url = signed_url
+            st.session_state.show_preview_modal = True
+            st.rerun() # 觸發重新運行以顯示 Modal
+        else:
+            st.error("無法生成有效的附件簽章 URL。請檢查 GCE 服務帳戶權限。")
+            
+    # 如果不是 gs:// 格式，可能是手動輸入的外部 URL，我們允許嘗試預覽
+    elif gcs_uri.startswith("http"):
+        st.session_state.preview_url = gcs_uri
+        st.session_state.show_preview_modal = True
+        st.rerun()
+    else:
+        st.warning("無效的 GCS URI 或 URL。")
 
 
 # 抽離寫入與重跑邏輯 (優化精簡)
@@ -640,12 +682,12 @@ def handle_add_new_quote(latest_arrival_date, uploaded_file):
     total_price = price * qty
     
     # --- 附件處理核心邏輯 ---
-    attachment_url = ""
+    attachment_uri = ""
     next_id = st.session_state.next_id # 預先取得 ID
     if uploaded_file is not None:
         st.info(f"正在上傳附件 {uploaded_file.name}...")
-        attachment_url = upload_attachment_to_gcs(uploaded_file, next_id)
-        if attachment_url is None:
+        attachment_uri = upload_attachment_to_gcs(uploaded_file, next_id)
+        if attachment_uri is None:
             # GCS 上傳失敗，停止新增報價
             return 
     # -------------------------
@@ -658,7 +700,7 @@ def handle_add_new_quote(latest_arrival_date, uploaded_file):
         '總價': total_price, '預計交貨日': final_delivery_date.strftime('%Y-%m-%d'), 
         '狀態': status, '採購最慢到貨日': latest_arrival_date.strftime('%Y-%m-%d'), 
         '標記刪除': False,
-        '附件URL': attachment_url # 新增附件URL
+        '附件URL': attachment_uri # 儲存 GCS URI (gs://...)
     }
     st.session_state.next_id += 1
     st.session_state.data = pd.concat([st.session_state.data, pd.DataFrame([new_row])], ignore_index=True)
@@ -722,18 +764,23 @@ def run_app():
         url = st.session_state.preview_url
         
         # 使用 Streamlit 內建的 st.modal
-        with st.expander("附件預覽", expanded=True):
+        with st.container():
             st.markdown(f"### 附件預覽", unsafe_allow_html=True)
             st.markdown("---")
             
-            # 判斷檔案類型進行渲染
-            if url and (url.lower().endswith(('.jpg', '.jpeg', '.png', '.gif'))):
+            # 判斷檔案類型進行渲染 (使用 signed URL 判斷)
+            # Signed URL 可能有 query params，所以只檢查開頭和結尾
+            
+            # 檢查是否為圖片
+            is_image = any(ext in url.lower() for ext in ('.jpg', '.jpeg', '.png', '.gif'))
+            
+            if is_image:
                 st.image(url, caption="圖片附件", use_column_width=True)
-            elif url and url.lower().endswith(('.pdf')):
+            elif ".pdf" in url.lower():
                 st.info("PDF 檔案無法直接嵌入 Streamlit 進行預覽。")
                 st.markdown(f"**下載連結:** [點此下載附件]({url})", unsafe_allow_html=True)
             elif url:
-                st.warning("無法識別的檔案類型或 URL 無效。")
+                st.warning("無法識別的檔案類型。")
                 st.markdown(f"**原始連結:** [點此外部開啟]({url})", unsafe_allow_html=True)
             else:
                 st.error("附件 URL 無效或不存在。")
@@ -774,7 +821,6 @@ def run_app():
     project_groups = df.groupby('專案名稱')
     
     # ... (省略 側邊欄，儀表板，批次操作 區塊) ...
-    # 為了簡潔，這裡省略了側邊欄和儀表板的重複代碼...
 
     # *** 專案 Expander 列表 (核心修改) ***
     
@@ -809,21 +855,21 @@ def run_app():
                 # 預覽按鈕 (V2.2.0 UX)
                 attachment_urls = item_data['附件URL'].tolist()
                 
-                if any(url and url.startswith("http") for url in attachment_urls):
+                if any(url and (url.startswith("gs://") or url.startswith("http")) for url in attachment_urls):
                     
-                    # 找出第一個有效的 URL 作為預覽對象
-                    first_valid_url = next((url for url in attachment_urls if url and url.startswith("http")), None)
+                    # 找出第一個有效的 URI/URL 作為預覽對象
+                    first_valid_uri = next((url for url in attachment_urls if url and (url.startswith("gs://") or url.startswith("http"))), None)
                     
                     # 判斷是否為圖片，用不同顏色顯示
-                    is_image = first_valid_url and first_valid_url.lower().endswith(('.jpg', '.jpeg', '.png', '.gif'))
-                    button_type = "secondary" if is_image else "primary"
-                    button_text = "圖片預覽" if is_image else "附件預覽"
+                    is_image_guess = any(ext in first_valid_uri.lower() for ext in ('.jpg', '.jpeg', '.png', '.gif'))
+                    button_type = "secondary" if is_image_guess else "primary"
+                    button_text = "圖片預覽" if is_image_guess else "附件預覽"
 
                     # 為了讓按鈕不與 data_editor 擠在一起，我們將它放在一個專門的 col
                     col_spacer, col_preview_btn = st.columns([0.85, 0.15])
                     with col_preview_btn:
                         if st.button(button_text, key=f"preview_{item_name}_{proj_name}", type=button_type):
-                            set_preview_url(first_valid_url)
+                            set_preview_url(first_valid_uri) # 傳遞 GCS URI 或外部 URL
                 
                 editable_df = item_data.copy()
                 editor_key = f"editor_{proj_name}_{item_name}"
@@ -840,8 +886,8 @@ def run_app():
                         "交期顯示": st.column_config.TextColumn("預計交貨日 (YYYY-MM-DD)", width="medium", help="可編輯，圖示會自動更新"),
                         "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
                         "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny", help="勾選後點擊上方按鈕執行刪除"), 
-                        # 附件 URL 欄位：可編輯，顯示為連結
-                        "附件URL": st.column_config.TextColumn("附件URL", help="GCS 儲存連結", disabled=False, width="medium"), 
+                        # 附件 URL 欄位：可編輯，儲存 GCS URI (gs://...)
+                        "附件URL": st.column_config.TextColumn("附件URL", help="GCS URI 或外部連結", disabled=False, width="medium"), 
                     },
                     key=editor_key,
                     hide_index=True,
