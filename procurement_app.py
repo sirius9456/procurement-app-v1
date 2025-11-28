@@ -820,7 +820,75 @@ def run_app():
     df = st.session_state.data
     project_groups = df.groupby('專案名稱')
     
-    # ... (省略 側邊欄，儀表板，批次操作 區塊) ...
+    # *** 儀表板區塊 ***
+    total_projects, total_budget, risk_items, pending_quotes = calculate_dashboard_metrics(df, st.session_state.project_metadata)
+
+    st.subheader("📊 總覽儀表板")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown(f"""
+        <div class='metric-box'>
+            <div class='metric-title'>專案總數</div>
+            <div class='metric-value'>{total_projects}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(f"""
+        <div class='metric-box' style='background-color:#21442c;'>
+            <div class='metric-title'>預估/已選總預算</div>
+            <div class='metric-value'>${total_budget:,.0f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""
+        <div class='metric-box' style='background-color:#5c2d2d;'>
+            <div class='metric-title'>交期風險項目</div>
+            <div class='metric-value'>{risk_items}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col4:
+        st.markdown(f"""
+        <div class='metric-box' style='background-color:#2a3b5c;'>
+            <div class='metric-title'>待處理報價數量</div>
+            <div class='metric-value'>{pending_quotes}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # *** 批次操作區塊 ***
+    col_save, col_delete = st.columns([0.8, 0.2])
+    
+    is_locked = st.session_state.show_delete_confirm # <--- 修正: 舊的定義位置，現在需移除
+    
+    with col_save:
+        if st.button("💾 儲存表格修改並計算總價/預算", type="primary", disabled=is_locked):
+            handle_master_save()
+            
+    with col_delete:
+        if st.button("🔴 刪除已標記項目", type="secondary", disabled=is_locked, key="btn_trigger_delete"):
+            trigger_delete_confirmation()
+
+    # 模擬確認對話框
+    if st.session_state.show_delete_confirm:
+        st.error(f"⚠️ 確認永久刪除 **{st.session_state.delete_count}** 筆已標記的報價嗎？此操作不可逆！")
+        
+        col_confirm_yes, col_confirm_no, _ = st.columns([0.2, 0.2, 0.6])
+        
+        with col_confirm_yes:
+            if st.button("✅ 確認刪除", key="confirm_delete_yes", type="primary"):
+                handle_batch_delete_quotes()
+        
+        with col_confirm_no:
+            if st.button("❌ 取消", key="confirm_delete_no"):
+                cancel_delete_confirmation()
+
+    st.markdown("---")
 
     # *** 專案 Expander 列表 (核心修改) ***
     
