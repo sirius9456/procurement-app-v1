@@ -16,13 +16,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__) # 定義 logger
 
 # --- 應用程式設定 ---
-APP_VERSION = "v2.2.8 (Hyperlink/GCS/Date Fix)" # 更新版本號以反映修正
+APP_VERSION = "v2.3.0 (Re-integration of features)" # 新增版本號
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
-DATE_FORMAT = "%Y-%m-%d"
+DATE_FORMAT = "%Y-%m-%d" # 日期格式
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S" # 時間戳增加秒數以確保唯一性
 
 # --- Google Cloud Storage (GCS) 配置 ---
-GCS_BUCKET_NAME = "procurement-attachments-bucket"
+GCS_BUCKET_NAME = "procurement-attachments-bucket" # 請替換為您的 GCS 儲存桶名稱
 GCS_ATTACHMENT_FOLDER = "attachments"
 
 # --- 數據源配置 (安全與 Gspread 連線) ---
@@ -85,7 +85,7 @@ CUSTOM_CSS = """
     .metric-title { font-size: 14px; color: #9E9E9E; margin-bottom: 5px; }
     .metric-value { font-size: 24px; font-weight: bold; }
 
-    /* 修正 2: 登出按鈕移到底部並縮小 */
+    /* 修正: 登出按鈕移到底部並縮小 */
     .sidebar-footer {
         position: fixed;
         bottom: 0;
@@ -141,13 +141,11 @@ CUSTOM_CSS = """
 """
 
 # ==============================================================================
-# GCS 服務相關函式
+# GCS 服務相關函式 (新增)
 # ==============================================================================
 
 def get_storage_client():
-    """
-    獲取 GCS 客戶端。
-    """
+    """獲取 GCS 客戶端。"""
     if GSHEETS_CREDENTIALS and os.path.exists(GSHEETS_CREDENTIALS):
         try:
             return storage.Client.from_service_account_json(GSHEETS_CREDENTIALS)
@@ -157,16 +155,13 @@ def get_storage_client():
     return storage.Client()
 
 def upload_attachment_to_gcs(file_obj, next_id):
-    """
-    將檔案上傳到 GCS 私有儲存桶。
-    """
+    """將檔案上傳到 GCS 私有儲存桶。"""
     if not file_obj: return None
     try:
         client = get_storage_client()
         bucket = client.bucket(GCS_BUCKET_NAME)
         ext = os.path.splitext(file_obj.name)[1]
         ts = datetime.now().strftime("%Y%m%d%H%M%S")
-        # 確保 blob 名稱唯一
         blob_name = f"{GCS_ATTACHMENT_FOLDER}/{next_id}_{ts}{ext}" 
         blob = bucket.blob(blob_name)
         file_obj.seek(0)
@@ -183,9 +178,7 @@ def upload_attachment_to_gcs(file_obj, next_id):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def generate_signed_url_cached(gcs_uri):
-    """
-    為 GCS 私有物件生成帶有簽章的臨時 URL (Signed URL)。
-    """
+    """為 GCS 私有物件生成帶有簽章的臨時 URL (Signed URL)。"""
     if not gcs_uri or not gcs_uri.startswith("gs://"): return None
     try:
         path_part = gcs_uri[5:]
@@ -263,7 +256,7 @@ def load_data_from_sheets():
     
     if not SHEET_URL:
         st.info("❌ Google Sheets URL 尚未配置。使用空的數據結構。")
-        empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '附件URL', '標記刪除', '最後修改時間']) # 新增 '最後修改時間'
+        empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '附件URL', '標記刪除', '最後修改時間'])
         return empty_data, {}
 
     try:
@@ -281,13 +274,13 @@ def load_data_from_sheets():
         data_records = data_ws.get_all_records()
         data_df = pd.DataFrame(data_records)
 
-        # 確保核心欄位存在
+        # 確保核心欄位存在 (新增附件URL, 最後修改時間)
         required_cols = ['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '附件URL', '標記刪除', '最後修改時間']
         for col in required_cols:
             if col not in data_df.columns: 
                 data_df[col] = "" 
                 
-        # 數據類型轉換與處理 (修正: 使用更穩健的方式處理 astype)
+        # 數據類型轉換與處理 (使用更穩健的方式處理 astype)
         dtype_map = {
             'ID': 'Int64', 
             '選取': 'bool', 
@@ -301,13 +294,12 @@ def load_data_from_sheets():
         valid_dtype_map = {col: dtype for col, dtype in dtype_map.items() if col in data_df.columns}
 
         if valid_dtype_map:
-            # 使用 errors='ignore' 處理轉換失敗的情況
             data_df = data_df.astype(valid_dtype_map, errors='ignore')
 
         if '標記刪除' not in data_df.columns:
             data_df['標記刪除'] = False
 
-        # 【核心修正 3】將預計交貨日轉換為 datetime 類型，以便 DateColumn 編輯器使用
+        # 將日期轉換為 datetime 類型
         data_df['預計交貨日'] = pd.to_datetime(data_df['預計交貨日'], errors='coerce', format=DATE_FORMAT) 
         data_df['採購最慢到貨日'] = pd.to_datetime(data_df['採購最慢到貨日'], errors='coerce', format=DATE_FORMAT)
 
@@ -333,7 +325,6 @@ def load_data_from_sheets():
         return data_df, project_metadata
 
     except Exception as e:
-        # 此處已經是錯誤處理，不應再次發生 astype 錯誤
         logging.exception("Google Sheets 數據載入時發生致命錯誤！") 
         
         st.error(f"❌ 數據載入失敗！請檢查 Sheets 分享權限、工作表名稱或憑證檔案。")
@@ -360,7 +351,7 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         sh = gc.open_by_url(SHEET_URL)
         
         # --- 2. 寫入採購總表 (Data) ---
-        # 排除 UI 輔助欄位 ('標記刪除', '交期顯示', '附件連結', '預覽')
+        # 排除 UI 輔助欄位
         cols_to_drop = ['標記刪除', '交期顯示', '附件連結', '預覽'] 
         df_export = df_to_write.copy()
         for col in cols_to_drop:
@@ -371,6 +362,11 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         for col in ['預計交貨日', '採購最慢到貨日']:
             if col in df_export.columns and pd.api.types.is_datetime64_any_dtype(df_export[col]):
                 df_export[col] = df_export[col].dt.strftime(DATE_FORMAT).fillna("")
+        
+        # 確保 '最後修改時間' 欄位存在，避免在空 DataFrame 上寫入時出錯
+        if '最後修改時間' in df_export.columns:
+             # 將 datetime 物件轉換為字串
+             df_export['最後修改時間'] = df_export['最後修改時間'].apply(lambda x: x.strftime(DATETIME_FORMAT) if isinstance(x, datetime) else str(x))
 
         data_ws = sh.worksheet(DATA_SHEET_NAME)
         data_ws.clear()
@@ -460,6 +456,20 @@ def calculate_dashboard_metrics(df_state, project_metadata_state):
     return total_projects, total_budget, risk_items, pending_quotes
 
 
+def calculate_project_budget(df, project_name):
+    # 此函式用於單一專案的預算顯示
+    proj_df = df[df['專案名稱'] == project_name]
+    total_budget = 0
+    for _, item_df in proj_df.groupby('專案項目'):
+        selected_rows = item_df[item_df['選取'] == True]
+        if not selected_rows.empty:
+            total_budget += selected_rows['總價'].sum()
+        else:
+            if not item_df.empty:
+                total_budget += item_df['總價'].min()
+    return total_budget
+
+
 @st.cache_data(show_spinner=False)
 def calculate_latest_arrival_dates(df, metadata):
     """根據專案設定，計算每個採購項目的採購最慢到貨日。"""
@@ -470,14 +480,16 @@ def calculate_latest_arrival_dates(df, metadata):
     metadata_df = pd.DataFrame.from_dict(metadata, orient='index')
     metadata_df = metadata_df.reset_index().rename(columns={'index': '專案名稱'})
     
-    metadata_df['due_date_dt'] = metadata_df['due_date'].apply(lambda x: pd.to_datetime(x).date())
+    # 確保 due_date 轉換為 datetime.date 類型
+    metadata_df['due_date_dt'] = metadata_df['due_date'].apply(lambda x: pd.to_datetime(x).date() if pd.notna(x) else None)
     metadata_df['buffer_days'] = metadata_df['buffer_days'].astype('Int64')
 
     df = pd.merge(df, metadata_df[['專案名稱', 'due_date_dt', 'buffer_days']], on='專案名稱', how='left')
 
+    # 計算最慢到貨日
     df['採購最慢到貨日_NEW'] = (
         df['due_date_dt'] - 
-        df['buffer_days'].apply(lambda x: timedelta(days=x) if pd.notna(x) else timedelta(days=0))
+        df['buffer_days'].apply(lambda x: timedelta(days=x) if pd.notna(x) and x is not None else timedelta(days=0))
     )
     
     # 由於 load_data_from_sheets 已經將採購最慢到貨日設為 datetime，我們直接覆蓋
@@ -501,7 +513,6 @@ def handle_master_save():
     main_df = st.session_state.data
     current_time_str = datetime.now().strftime(DATETIME_FORMAT)
     
-    # 專案層級的時間戳記不再更新，這裡只更新報價層級
     affected_projects = set() 
     changes_detected = False
     
@@ -530,8 +541,10 @@ def handle_master_save():
                     main_df.loc[main_idx, '預計交貨日'] = new_delivery_date
                     row_changed = True
             
+            # 檢查其他可更新欄位
             updatable_cols = ['選取', '供應商', '單價', '數量', '狀態', '標記刪除'] 
             for col in updatable_cols:
+                 # 使用 str 轉換進行穩健比較
                  if str(main_df.loc[main_idx, col]) != str(new_row[col]):
                     main_df.loc[main_idx, col] = new_row[col]
                     row_changed = True
@@ -547,10 +560,9 @@ def handle_master_save():
             
             if row_changed:
                 changes_detected = True
-                # 【核心修正 4】更新單一報價的最後修改時間
+                # 更新單一報價的最後修改時間
                 main_df.loc[main_idx, '最後修改時間'] = current_time_str
                 
-                # 更新專案 metadata (用於儀表板計數)
                 proj = main_df.loc[main_idx, '專案名稱']
                 affected_projects.add(proj)
                 
@@ -572,8 +584,6 @@ def trigger_delete_confirmation():
     """點擊 '刪除已標記項目' 按鈕時，觸發確認流程。"""
     
     temp_df = st.session_state.data.copy()
-    
-    # 合併 edited_dataframes (僅處理 '標記刪除' 欄位)
     
     # 由於 edited_df 現在是以 ID 為索引，我們需要先重設索引再合併
     combined_edited_df = pd.concat(
@@ -631,6 +641,87 @@ def handle_batch_delete_quotes():
     
     st.rerun()
 
+def handle_project_modification():
+    """處理修改專案設定的邏輯"""
+    target_proj = st.session_state.edit_target_project
+    new_name = st.session_state.edit_new_name
+    new_date = st.session_state.edit_new_date
+    current_time_str = datetime.now().strftime(DATETIME_FORMAT)
+    
+    if not new_name:
+        st.error("專案名稱不能為空")
+        return
+        
+    if target_proj != new_name and new_name in st.session_state.project_metadata:
+        st.error(f"新的專案名稱 '{new_name}' 已存在，請使用不同名稱。")
+        return
+
+    # 1. 更新 Metadata
+    meta = st.session_state.project_metadata.pop(target_proj)
+    meta['due_date'] = new_date
+    meta['last_modified'] = current_time_str
+    st.session_state.project_metadata[new_name] = meta
+    
+    # 2. 更新 Dataframe
+    st.session_state.data.loc[st.session_state.data['專案名稱'] == target_proj, '專案名稱'] = new_name
+    
+    # 寫回 Google Sheets
+    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+        st.success(f"✅ 專案已更新：{new_name}。Sheets 已更新。")
+    
+    st.rerun()
+
+def handle_delete_project(project_to_delete):
+    """刪除選定的專案及其所有相關報價。"""
+    
+    if not project_to_delete:
+        st.error("請選擇要刪除的專案。")
+        return
+
+    # 1. 刪除專案設定 (Metadata)
+    if project_to_delete in st.session_state.project_metadata:
+        del st.session_state.project_metadata[project_to_delete]
+
+    # 2. 刪除所有相關報價 (Data)
+    initial_count = len(st.session_state.data)
+    st.session_state.data = st.session_state.data[
+        st.session_state.data['專案名稱'] != project_to_delete
+    ].reset_index(drop=True)
+    
+    deleted_count = initial_count - len(st.session_state.data)
+
+    # 寫回 Google Sheets
+    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+        st.success(f"✅ 專案 **{project_to_delete}** 及其相關的 {deleted_count} 筆報價已成功刪除。Sheets 已更新。")
+    
+    st.rerun()
+
+def handle_add_new_project():
+    """處理新增專案設定的邏輯"""
+    project_name = st.session_state.new_proj_name
+    project_due_date = st.session_state.new_proj_due_date
+    buffer_days = st.session_state.new_proj_buffer_days
+    current_time_str = datetime.now().strftime(DATETIME_FORMAT)
+
+    if not project_name:
+        st.error("專案名稱不能為空。")
+        return
+        
+    if project_name in st.session_state.project_metadata:
+        st.warning(f"專案 '{project_name}' 已存在，將更新其時程設定。")
+    
+    st.session_state.project_metadata[project_name] = {
+        'due_date': project_due_date, 
+        'buffer_days': buffer_days,
+        'last_modified': current_time_str
+    }
+    
+    # 寫回 Google Sheets
+    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+        st.success(f"✅ 已新增/更新專案設定：{project_name}。Sheets 已更新。")
+    
+    st.rerun()
+
 def handle_add_new_quote(latest_arrival_date):
     """處理新增報價的邏輯，包含 GCS 上傳。"""
     project_name = st.session_state.quote_project_select
@@ -655,7 +746,7 @@ def handle_add_new_quote(latest_arrival_date):
         st.error(f"專案 '{project_name}' 的時程設定不存在。請先在 '➕ 新增專案' 區塊設定該專案的交期。")
         return
         
-    # --- 核心修正 1: GCS 附件上傳 ---
+    # --- GCS 附件上傳 ---
     uri = ""
     if uploaded_file:
         with st.spinner(f"正在上傳附件 {uploaded_file.name}..."):
@@ -674,7 +765,7 @@ def handle_add_new_quote(latest_arrival_date):
         '採購最慢到貨日': pd.to_datetime(latest_arrival_date).normalize(), # 儲存為 datetime 物件
         '附件URL': uri, # 儲存 GCS URI
         '標記刪除': False,
-        '最後修改時間': current_time_str # 【核心修正 4】新增時即記錄時間戳
+        '最後修改時間': current_time_str # 新增時即記錄時間戳
     }
     st.session_state.next_id += 1
     st.session_state.data = pd.concat([st.session_state.data, pd.DataFrame([new_row])], ignore_index=True)
@@ -710,10 +801,8 @@ def initialize_session_state():
     if 'preview_url' not in st.session_state: st.session_state.preview_url = None
     if 'preview_type' not in st.session_state: st.session_state.preview_type = None
 
-# ==============================================================================
-# 主應用程式核心邏輯 (在登入成功後調用)
-# ==============================================================================
 
+# --- 主應用程式核心邏輯 (在登入成功後調用) ---
 def run_app():
     """運行應用程式的核心邏輯，在成功登入後調用。"""
     
@@ -724,7 +813,6 @@ def run_app():
     today = datetime.now().date() 
 
     # 數據自動計算：在初始化後，計算最慢到貨日
-    # 這裡會返回 datetime 類型
     st.session_state.data = calculate_latest_arrival_dates(
         st.session_state.data, 
         st.session_state.project_metadata
@@ -784,7 +872,6 @@ def run_app():
         
         # 區塊 1: 修改/刪除專案
         with st.expander("✏️ 修改/刪除專案資訊", expanded=False): 
-            # ... (內容保持不變，略過以節省空間，但程式碼中保持完整) ...
             all_projects = sorted(list(st.session_state.project_metadata.keys()))
             
             if all_projects:
@@ -802,24 +889,19 @@ def run_app():
                 current_meta = st.session_state.project_metadata.get(target_proj, {'due_date': today})
                 
                 if operation == "修改專案資訊":
-                    # handle_project_modification function definition is missing in the provided context,
-                    # but its call is maintained for functionality completeness.
-                    # Assuming definition exists outside this snippet or is imported.
                     st.markdown("##### ✏️ 專案資訊修改")
                     st.text_input("新專案名稱", value=target_proj, key="edit_new_name")
                     st.date_input("新專案交貨日", value=current_meta['due_date'], key="edit_new_date")
                     
                     if st.button("確認修改專案", type="primary", use_container_width=True): 
-                        # handle_project_modification()
-                        pass
+                        handle_project_modification()
                 
                 elif operation == "刪除專案":
                     st.markdown("##### 🗑️ 專案刪除 (⚠️ 警告)")
                     st.warning(f"您即將永久刪除專案 **{target_proj}** 及其所有相關報價資料。")
                     
                     if st.button(f"確認永久刪除 {target_proj}", type="secondary", help="此操作不可逆，將同時移除所有相關報價", use_container_width=True):
-                        # handle_delete_project(target_proj)
-                        pass
+                        handle_delete_project(target_proj)
                         
             else: 
                 st.info("無專案可修改/刪除。請在下方新增專案。")
@@ -828,7 +910,6 @@ def run_app():
         
         # 區塊 2: 新增/設定專案時程
         with st.expander("➕ 新增/設定專案時程", expanded=False): 
-            # ... (內容保持不變，略過以節省空間，但程式碼中保持完整) ...
             st.text_input("專案名稱 (Project Name)", key="new_proj_name")
             
             project_due_date = st.date_input("專案交貨日 (Project Due Date)", value=today + timedelta(days=30), key="new_proj_due_date")
@@ -838,14 +919,12 @@ def run_app():
             st.caption(f"計算得出最慢到貨日：{latest_arrival_date_proj.strftime('%Y年%m月%d日')}")
 
             if st.button("💾 儲存專案設定", key="btn_save_proj", use_container_width=True):
-                # handle_add_new_project()
-                pass
+                handle_add_new_project()
         
         st.markdown("---")
         
         # 區塊 3: 新增報價
         with st.expander("➕ 新增報價", expanded=False): 
-            # ... (內容保持不變，略過以節省空間，但程式碼中保持完整) ...
             all_projects_for_quote = sorted(list(st.session_state.project_metadata.keys()))
             latest_arrival_date = today 
             
@@ -902,7 +981,7 @@ def run_app():
 
             st.selectbox("目前狀態", STATUS_OPTIONS, key="quote_status")
             
-            # 【核心修正 1】附件上傳
+            # 附件上傳
             st.markdown("---")
             st.markdown("##### 📎 附件上傳 (圖片/PDF)")
             st.file_uploader("選擇檔案", type=['png', 'jpg', 'jpeg', 'pdf'], key="new_quote_file_uploader")
@@ -911,7 +990,7 @@ def run_app():
                 handle_add_new_quote(latest_arrival_date)
 
 
-        # 修正 2: 登出按鈕移到底部
+        # 登出按鈕移到底部
         st.markdown('<div class="sidebar-footer">', unsafe_allow_html=True)
         st.button("🚪 登出系統", on_click=logout, type="secondary", key="sidebar_logout_btn")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -920,7 +999,6 @@ def run_app():
     # --- 主介面 ---
     
     # *** 儀表板區塊 ***
-    # ... (內容保持不變，略過以節省空間，但程式碼中保持完整) ...
     total_projects, total_budget, risk_items, pending_quotes = calculate_dashboard_metrics(df, st.session_state.project_metadata)
 
     st.subheader("📊 總覽儀表板")
@@ -1024,12 +1102,13 @@ def run_app():
 
                     editable_df = item_data.copy()
                     
-                    # *** 修正 1.1：設定 ID 為索引，隱藏 ID 欄位 ***
-                    editable_df.set_index('ID', inplace=True) 
+                    # *** 設定 ID 為索引，隱藏 ID 欄位 ***
+                    if 'ID' in editable_df.columns:
+                        editable_df.set_index('ID', inplace=True) 
 
                     editor_key = f"editor_{proj_name}_{item_name}"
                     
-                    # 【核心修正 1】附件連結與預覽按鈕
+                    # 附件連結與預覽按鈕
                     editable_df['附件連結'] = None
                     editable_df['預覽'] = None
                     
@@ -1043,11 +1122,9 @@ def run_app():
                         if gcs_uri:
                             signed_url = generate_signed_url_cached(gcs_uri)
                             if signed_url:
-                                # 簡化 MIME 類型判斷
                                 mime_type = 'application/pdf' if gcs_uri.lower().endswith('.pdf') else 'image/jpeg' 
                                 editable_df.loc[idx, '附件連結'] = signed_url
-                                # 創建預覽按鈕
-                                editable_df.loc[idx, '預覽'] = f"Preview_{idx}" # 使用索引
+                                
                                 # 註冊預覽點擊事件 (使用 Streamlit 的按鈕)
                                 st.button("📄 預覽", 
                                           key=f"preview_btn_{idx}", 
@@ -1063,37 +1140,38 @@ def run_app():
                     edited_df_value = st.data_editor(
                         editable_df[cols_to_display],
                         column_config={
-                            # 移除 ID 欄位配置
                             "選取": st.column_config.CheckboxColumn("選", width="tiny"), 
                             "供應商": st.column_config.Column("供應商", disabled=False), 
                             "單價": st.column_config.NumberColumn("單價", format="$%d"),
                             "數量": st.column_config.NumberColumn("數量"),
                             "總價": st.column_config.NumberColumn("總價", format="$%d", disabled=True),
                             
-                            # 【核心修正 3】改為 DateColumn
+                            # 日曆日期選擇器
                             "預計交貨日": st.column_config.DateColumn("預計交貨日", format=DATE_FORMAT, help="點擊日曆圖示修改交期"), 
                             
-                            "交期顯示": st.column_config.TextColumn("期限判定", disabled=True, width="medium"), # 顯示紅綠燈
+                            "交期顯示": st.column_config.TextColumn("期限判定", disabled=True, width="medium"), 
                             "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
                             
-                            # 【核心修正 4】單一報價的時間戳記
+                            # 單一報價的時間戳記
                             "最後修改時間": st.column_config.TextColumn("最後修改", disabled=True, width="medium"),
                             
-                            # 修正 1: 刪除欄位標題改為 "X"
+                            # 刪除欄位標題改為 "X"
                             "標記刪除": st.column_config.CheckboxColumn("X", width="tiny", help="勾選後點擊上方按鈕執行刪除"), 
                             
                             "附件連結": st.column_config.LinkColumn("附件", display_text="連結", width="small") # 僅顯示連結
                         },
                         key=editor_key,
-                        hide_index=True, # 隱藏索引的標籤/名稱，但索引值仍存在於返回的 DataFrame 中
+                        hide_index=True, # 隱藏索引的標籤/名稱
                         use_container_width=True,
                         height=150 + (len(item_data) * 35) if len(item_data) > 3 else 150,
                         disabled=is_locked
                     )
                     
                     # 將附件URL和最後修改時間傳遞回 edited_df_value
-                    edited_df_value['附件URL'] = editable_df['附件URL']
-                    edited_df_value['最後修改時間'] = editable_df['最後修改時間'] 
+                    if '附件URL' in editable_df.columns:
+                        edited_df_value['附件URL'] = editable_df['附件URL']
+                    if '最後修改時間' in editable_df.columns:
+                        edited_df_value['最後修改時間'] = editable_df['最後修改時間'] 
 
                     st.session_state.edited_dataframes[item_name] = edited_df_value 
                     st.markdown("---")
@@ -1115,18 +1193,6 @@ def main():
     if 'preview_url' not in st.session_state:
         st.session_state.preview_url = None
         
-    # 這裡省略了 handle_project_modification, handle_delete_project, handle_add_new_project, 
-    # 和 cancel_delete_confirmation 函數的定義，假設它們在完整代碼中存在。
-    # 為了程式碼的完整性，在實際環境中，您需要確保這些函數在 main() 之前被定義。
-    
-    # [Placeholder Definitions for Missing Functions]
-    def handle_project_modification(): pass
-    def handle_delete_project(project_to_delete): pass
-    def handle_add_new_project(): pass
-    def cancel_delete_confirmation(): 
-        st.session_state.show_delete_confirm = False
-        st.rerun()
-
     login_form()
     
     if st.session_state.authenticated:
