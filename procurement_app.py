@@ -266,7 +266,8 @@ def load_data_from_sheets():
         data_df['選取'] = data_df['選取'].astype(str).str.upper() == 'TRUE'
         data_df['標記刪除'] = data_df['標記刪除'].astype(str).str.upper() == 'TRUE'
         
-        # 修正 StreamlitAPIException: 將日期欄位強制轉換為 datetime64 類型
+        # 【重要修復】將日期欄位強制轉換為 datetime64 類型，以兼容 DateColumn
+        # Streamlit DateColumn 要求底層數據為 datetime 類型
         data_df['預計交貨日'] = pd.to_datetime(data_df['預計交貨日'], errors='coerce', format=DATE_FORMAT)
         data_df['採購最慢到貨日'] = pd.to_datetime(data_df['採購最慢到貨日'], errors='coerce', format=DATE_FORMAT)
 
@@ -306,7 +307,8 @@ def write_data_to_sheets(df, meta):
         # 確保日期欄位為字串格式 (Gspread 要求)
         for col in ['預計交貨日', '採購最慢到貨日']:
             if col in export_df.columns:
-                export_df[col] = export_df[col].dt.strftime(DATE_FORMAT).fillna("")
+                # 這裡必須將 datetime64 轉回字串格式，否則 gspread 會失敗
+                export_df[col] = export_df[col].dt.strftime(DATE_FORMAT).fillna("") 
 
         data_ws = sh.worksheet(DATA_SHEET_NAME)
         data_ws.clear()
@@ -338,10 +340,7 @@ def calculate_latest_arrival(df, meta):
     meta_df['due_date'] = pd.to_datetime(meta_df['due_date']).dt.date
     df = pd.merge(df, meta_df[['專案名稱', 'due_date', 'buffer_days']], on='專案名稱', how='left')
     
-    # 這裡的計算依賴於 df['due_date'] 和 df['buffer_days'] 欄位
-    # 但由於 merge 後會覆蓋，我們使用原始的 meta 數據進行計算的日期部分
-    
-    # 修正：直接在 DF 中進行計算
+    # 這裡的計算需要將 date 轉換為 datetime 才能進行 timedelta 運算
     df['temp_due_date'] = pd.to_datetime(df['due_date'])
     df['採購最慢到貨日'] = (df['temp_due_date'] - pd.to_timedelta(df['buffer_days'].astype(int), unit='D'))
     
@@ -370,6 +369,7 @@ def calculate_metrics(df, meta):
             budget += sel['總價'].sum() if not sel.empty else item['總價'].min()
             
     # 計算風險項 (預計交貨日 > 最慢到貨日)
+    # 比較 datetime64[ns] 類型
     risk = (df['預計交貨日'].dt.date > df['採購最慢到貨日'].dt.date).sum()
     
     # 計算待處理 (非 '已收貨' 或 '取消')
@@ -419,14 +419,11 @@ def handle_master_save():
                 
                 if col == '預計交貨日':
                     # 處理 DateColumn 返回的 datetime.date/datetime.datetime 物件
-                    # 由於 main_df[col] 現在是 datetime64 類型，我們直接比較對象
-                    # new_row.get(col) 可能是 date 或 datetime.datetime 物件
+                    # 必須將新的值轉換為 datetime64[ns] 類型進行準確比較和儲存
+                    new_dt = pd.to_datetime(val_new, errors='coerce').normalize()
                     
-                    # 將 new_value 轉換為 datetime64[ns] 類型進行準確比較
-                    new_dt = pd.to_datetime(val_new, errors='coerce')
-                    
-                    if not pd.to_datetime(val_main).normalize().equals(new_dt.normalize()):
-                        main_df.loc[idx, col] = new_dt.normalize() # 確保儲存為 datetime64[ns]
+                    if not pd.to_datetime(val_main).normalize().equals(new_dt):
+                        main_df.loc[idx, col] = new_dt 
                         row_changed = True
 
                 # 其他欄位比對
