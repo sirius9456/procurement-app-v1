@@ -266,6 +266,10 @@ def load_data_from_sheets():
         data_df['選取'] = data_df['選取'].astype(str).str.upper() == 'TRUE'
         data_df['標記刪除'] = data_df['標記刪除'].astype(str).str.upper() == 'TRUE'
         
+        # 修正 StreamlitAPIException: 將日期欄位強制轉換為 datetime64 類型
+        data_df['預計交貨日'] = pd.to_datetime(data_df['預計交貨日'], errors='coerce', format=DATE_FORMAT)
+        data_df['採購最慢到貨日'] = pd.to_datetime(data_df['採購最慢到貨日'], errors='coerce', format=DATE_FORMAT)
+
         logger.info(f"Loaded {len(data_df)} records.")
 
         # --- 2. 讀取專案設定 (Metadata) ---
@@ -299,10 +303,10 @@ def write_data_to_sheets(df, meta):
         # 排除前端輔助欄位
         export_df = df.drop(columns=['標記刪除', '交期狀態', '附件連結'], errors='ignore').fillna("")
         
-        # 確保日期欄位為字串格式
-        for col in export_df.columns:
-            if pd.api.types.is_datetime64_any_dtype(export_df[col]):
-                export_df[col] = export_df[col].dt.strftime(DATE_FORMAT)
+        # 確保日期欄位為字串格式 (Gspread 要求)
+        for col in ['預計交貨日', '採購最慢到貨日']:
+            if col in export_df.columns:
+                export_df[col] = export_df[col].dt.strftime(DATE_FORMAT).fillna("")
 
         data_ws = sh.worksheet(DATA_SHEET_NAME)
         data_ws.clear()
@@ -333,9 +337,16 @@ def calculate_latest_arrival(df, meta):
     meta_df = pd.DataFrame.from_dict(meta, orient='index').reset_index().rename(columns={'index': '專案名稱'})
     meta_df['due_date'] = pd.to_datetime(meta_df['due_date']).dt.date
     df = pd.merge(df, meta_df[['專案名稱', 'due_date', 'buffer_days']], on='專案名稱', how='left')
-    df['採購最慢到貨日'] = (pd.to_datetime(df['due_date']) - pd.to_timedelta(df['buffer_days'].astype(int), unit='D')).dt.strftime(DATE_FORMAT)
+    
+    # 這裡的計算依賴於 df['due_date'] 和 df['buffer_days'] 欄位
+    # 但由於 merge 後會覆蓋，我們使用原始的 meta 數據進行計算的日期部分
+    
+    # 修正：直接在 DF 中進行計算
+    df['temp_due_date'] = pd.to_datetime(df['due_date'])
+    df['採購最慢到貨日'] = (df['temp_due_date'] - pd.to_timedelta(df['buffer_days'].astype(int), unit='D'))
+    
     # 移除輔助欄位
-    return df.drop(columns=['due_date', 'buffer_days'], errors='ignore')
+    return df.drop(columns=['due_date', 'buffer_days', 'temp_due_date'], errors='ignore')
 
 def calculate_project_budget(df, project_name):
     """計算單一專案的總預算 (已選/預估最小值)。"""
@@ -359,7 +370,7 @@ def calculate_metrics(df, meta):
             budget += sel['總價'].sum() if not sel.empty else item['總價'].min()
             
     # 計算風險項 (預計交貨日 > 最慢到貨日)
-    risk = (pd.to_datetime(df['預計交貨日'], errors='coerce') > pd.to_datetime(df['採購最慢到貨日'], errors='coerce')).sum()
+    risk = (df['預計交貨日'].dt.date > df['採購最慢到貨日'].dt.date).sum()
     
     # 計算待處理 (非 '已收貨' 或 '取消')
     pending = df[~df['狀態'].isin(['已收貨', '取消'])].shape[0]
@@ -408,13 +419,16 @@ def handle_master_save():
                 
                 if col == '預計交貨日':
                     # 處理 DateColumn 返回的 datetime.date/datetime.datetime 物件
-                    if isinstance(val_new, datetime) or isinstance(val_new, type(datetime.now().date())):
-                         val_new = val_new.strftime(DATE_FORMAT)
+                    # 由於 main_df[col] 現在是 datetime64 類型，我們直接比較對象
+                    # new_row.get(col) 可能是 date 或 datetime.datetime 物件
                     
-                    if str(val_main) != str(val_new):
-                        main_df.loc[idx, col] = val_new
+                    # 將 new_value 轉換為 datetime64[ns] 類型進行準確比較
+                    new_dt = pd.to_datetime(val_new, errors='coerce')
+                    
+                    if not pd.to_datetime(val_main).normalize().equals(new_dt.normalize()):
+                        main_df.loc[idx, col] = new_dt.normalize() # 確保儲存為 datetime64[ns]
                         row_changed = True
-                
+
                 # 其他欄位比對
                 elif str(val_main) != str(val_new):
                     main_df.loc[idx, col] = val_new
@@ -470,8 +484,9 @@ def handle_add_new_quote(latest_arrival, file):
         'ID': st.session_state.next_id, '選取': False, '專案名稱': proj, '專案項目': item,
         '供應商': st.session_state.quote_supplier, '單價': st.session_state.quote_price,
         '數量': st.session_state.quote_qty, '總價': st.session_state.quote_price * st.session_state.quote_qty,
-        '預計交貨日': del_date.strftime(DATE_FORMAT), '狀態': st.session_state.quote_status,
-        '採購最慢到貨日': latest_arrival.strftime(DATE_FORMAT), 
+        '預計交貨日': pd.to_datetime(del_date), # 儲存為 datetime 類型
+        '狀態': st.session_state.quote_status,
+        '採購最慢到貨日': pd.to_datetime(latest_arrival), # 儲存為 datetime 類型
         '最後修改時間': now_str, 
         '標記刪除': False, '附件URL': uri
     }
@@ -619,12 +634,12 @@ def run_app():
     
     # 建立 交期狀態 (紅綠燈)
     def get_status_icon(row):
-        """生成期限判定欄位的顯示內容，使用 Emoji 和文字 (非 HTML)。"""
+        """生成期限判定欄位的顯示內容，使用 Emoji 和文字。"""
         try:
-            proj_date = pd.to_datetime(row['預計交貨日']).date()
-            latest_date = pd.to_datetime(row['採購最慢到貨日']).date()
+            # 由於數據現在是 datetime64 類型，我們可以直接取 date 進行比較
+            proj_date = row['預計交貨日'].date()
+            latest_date = row['採購最慢到貨日'].date()
             
-            # 修復: 移除 HTML span，直接返回 Emoji 和文字以兼容舊版 Streamlit
             if proj_date > latest_date:
                  return "🔴 落後" 
             elif proj_date <= latest_date:
@@ -812,11 +827,10 @@ def run_app():
                         "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                         "選取": st.column_config.CheckboxColumn("選", width="small"),
                         "總價": st.column_config.NumberColumn(format="$%d", disabled=True),
-                        # V2.2.6/7: 將預計交貨日改為 DateColumn 方便修改
+                        # 修正: 預計交貨日欄位現在與底層數據 (datetime64[ns]) 兼容
                         "預計交貨日": st.column_config.DateColumn("預計交貨日", format="YYYY-MM-DD", help="點擊修改日期"), 
                         
                         # 新增的追蹤欄位
-                        # FIX: 將 HtmlColumn 改為 TextColumn 避免 AttributeError
                         "交期狀態": st.column_config.TextColumn("期限判定", disabled=True, width="small"), 
                         "最後修改時間": st.column_config.TextColumn("最後修改", disabled=True, width="medium"), # 報價時間戳
                         
