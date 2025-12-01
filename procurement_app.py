@@ -780,7 +780,8 @@ def run_app():
     df = st.session_state.data
     project_groups = df.groupby('專案名稱')
     
-    # *** 側邊欄 UI 邏輯 *** with st.sidebar:
+    # *** 側邊欄 UI 邏輯 *** 
+    with st.sidebar:
         
         # 顯示登出按鈕 
         st.button("登出", on_click=logout, type="secondary")
@@ -1076,3 +1077,4 @@ def main():
         
 if __name__ == "__main__":
     main()
+
