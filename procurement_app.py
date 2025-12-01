@@ -18,8 +18,8 @@ from google.cloud import storage
 # 確保 openpyxl 庫已安裝 (用於 Excel 匯出)
 
 # --- 應用程式設定與常數定義 ---
-# 依照您的要求，版本號回復並鎖定在 v2.2.5
-APP_VERSION = "v2.2.5" 
+# 版本號更新以反映 UI 修正
+APP_VERSION = "v2.2.6 (UI Fixed)" 
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"] # 報價狀態選項
 DATE_FORMAT = "%Y-%m-%d"                            # 日期標準格式
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"               # 時間戳標準格式
@@ -68,15 +68,52 @@ st.set_page_config(
 )
 
 # --- CSS 樣式優化 ---
-# 恢復較為基礎的樣式，取消 V2.1.6 的特殊格式
+# 包含：中文字型修正、儀表板卡片樣式、專案標題樣式
 CUSTOM_CSS = """
 <style>
+    /* 強制指定中文字型，解決部分環境標題亂碼問題 */
+    html, body, [class*="css"] {
+        font-family: "Microsoft JhengHei", "Noto Sans TC", "PingFang TC", sans-serif;
+    }
+
     .block-container { padding-top: 1rem; padding-bottom: 2rem; }
     
+    /* 儀表板卡片樣式 */
+    .metric-card {
+        padding: 15px;
+        border-radius: 8px;
+        text-align: center;
+        color: white;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    .card-grey { background-color: #33343c; border: 1px solid #555; }
+    .card-green { background-color: #1b4d3e; border: 1px solid #2e7d67; }
+    .card-red { background-color: #5a2a2a; border: 1px solid #8c4242; }
+    .card-blue { background-color: #2a3b5a; border: 1px solid #425b8c; }
+    
+    .metric-value { font-size: 26px; font-weight: bold; margin-bottom: 5px; }
+    .metric-label { font-size: 14px; opacity: 0.9; }
+
+    /* 專案標題樣式 (完整資訊版) */
+    .project-card-header {
+        background-color: #262730;
+        padding: 12px 20px;
+        border-radius: 6px;
+        border-left: 5px solid #FF4B4B;
+        margin-bottom: 10px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    .proj-title { font-size: 20px; font-weight: bold; color: #FFFFFF; }
+    .proj-info-group { display: flex; gap: 15px; align-items: center; }
+    .proj-meta { font-size: 15px; color: #CCC; }
+    .proj-budget { font-size: 18px; font-weight: bold; color: #4CAF50; background: rgba(76, 175, 80, 0.1); padding: 2px 8px; border-radius: 4px; }
+
+    /* 狀態與表格 */
     .status-ok { color: #4CAF50; font-weight: bold; }
     .status-risk { color: #FF4B4B; font-weight: bold; }
-    
-    /* 調整 DataFrame 編輯器的字體大小 */
     .stDataFrame { font-size: 14px; }
 </style>
 """
@@ -693,12 +730,29 @@ def run_app():
     #      主畫面 (Main UI)
     # ==========================
     
+    # 修正：儀表板改為 HTML 卡片樣式 (V2.1.6 風格)
     n, b, r, p = calculate_metrics(df, st.session_state.project_metadata)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("專案數", n)
-    c2.metric("總預算", f"${b:,.0f}")
-    c3.metric("風險項", r)
-    c4.metric("待處理", p)
+    
+    st.markdown(f"""
+    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+        <div style="flex: 1;" class="metric-card card-grey">
+            <div class="metric-value">{n}</div>
+            <div class="metric-label">專案總數</div>
+        </div>
+        <div style="flex: 1;" class="metric-card card-green">
+            <div class="metric-value">${b:,.0f}</div>
+            <div class="metric-label">預估/已選總預算</div>
+        </div>
+        <div style="flex: 1;" class="metric-card card-red">
+            <div class="metric-value">{r}</div>
+            <div class="metric-label">交期風險項目</div>
+        </div>
+        <div style="flex: 1;" class="metric-card card-blue">
+            <div class="metric-value">{p}</div>
+            <div class="metric-label">待處理報價數量</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     
     st.markdown("---")
     
@@ -725,10 +779,21 @@ def run_app():
         
     for proj_name, proj_data in df.groupby('專案名稱'):
         meta = st.session_state.project_metadata.get(proj_name, {})
+        budget = calculate_project_budget(proj_data, proj_name)
         
-        st.subheader(f"💼 {proj_name} | 交期: {meta.get('due_date')}")
+        # 修正：專案標題改為 HTML 樣式 (V2.1.6 風格) 以顯示完整資訊
+        st.markdown(f"""
+        <div class="project-card-header">
+            <span class="proj-title">💼 {proj_name}</span>
+            <div class="proj-info-group">
+                <span class="proj-budget">總預算: ${budget:,.0f}</span>
+                <span class="proj-meta"> | 交期: {meta.get('due_date')}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         
-        with st.expander("展開明細", expanded=True):
+        # 修正：預設改為收起 (expanded=False)
+        with st.expander("點擊展開明細", expanded=False):
             for item_name, item_data in proj_data.groupby('專案項目'):
                 st.markdown(f"**📦 {item_name}**")
                 
