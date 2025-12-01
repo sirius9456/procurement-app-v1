@@ -486,16 +486,19 @@ def calculate_latest_arrival_dates(df, metadata):
 
     df = pd.merge(df, metadata_df[['專案名稱', 'due_date_dt', 'buffer_days']], on='專案名稱', how='left')
 
-    # 計算最慢到貨日
-    df['採購最慢到貨日_NEW'] = (
-        df['due_date_dt'] - 
-        df['buffer_days'].apply(lambda x: timedelta(days=x) if pd.notna(x) and x is not None else timedelta(days=0))
-    )
+    # 【修正核心】將 due_date_dt 轉換為 datetime64[ns] 類型，才能與 TimedeltaArray 進行運算
+    df['due_date_ts'] = pd.to_datetime(df['due_date_dt'])
+    
+    # 計算 buffer_days 的 TimedeltaSeries
+    buffer_timedelta = df['buffer_days'].apply(lambda x: timedelta(days=x) if pd.notna(x) and x is not None else timedelta(days=0))
+
+    # 計算最慢到貨日 (Timestamp - Timedelta)
+    df['採購最慢到貨日_NEW'] = df['due_date_ts'] - buffer_timedelta
     
     # 由於 load_data_from_sheets 已經將採購最慢到貨日設為 datetime，我們直接覆蓋
     df['採購最慢到貨日'] = df['採購最慢到貨日_NEW']
     
-    df = df.drop(columns=['due_date_dt', 'buffer_days', '採購最慢到貨日_NEW'], errors='ignore') 
+    df = df.drop(columns=['due_date_dt', 'due_date_ts', 'buffer_days', '採購最慢到貨日_NEW'], errors='ignore') 
     
     return df
 
