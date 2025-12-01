@@ -18,7 +18,8 @@ from google.cloud import storage
 # 確保 openpyxl 庫已安裝 (用於 Excel 匯出)
 
 # --- 應用程式設定與常數定義 ---
-APP_VERSION = "v2.2.8 (Production Verbose & Complete)" # 更新版本號
+# 依照您的要求，版本號鎖定在 v2.2
+APP_VERSION = "v2.2" 
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"] # 報價狀態選項
 DATE_FORMAT = "%Y-%m-%d"                            # 日期標準格式
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"               # 時間戳標準格式
@@ -95,7 +96,7 @@ CUSTOM_CSS = """
         margin-bottom: 10px;
     }
     
-    /* 狀態燈號樣式 */
+    /* 狀態燈號樣式 (CSS 樣式在此版本無效，但保留結構) */
     .status-ok { color: #4CAF50; font-weight: bold; }
     .status-risk { color: #FF4B4B; font-weight: bold; }
 </style>
@@ -618,20 +619,22 @@ def run_app():
     
     # 建立 交期狀態 (紅綠燈)
     def get_status_icon(row):
+        """生成期限判定欄位的顯示內容，使用 Emoji 和文字 (非 HTML)。"""
         try:
             proj_date = pd.to_datetime(row['預計交貨日']).date()
             latest_date = pd.to_datetime(row['採購最慢到貨日']).date()
             
+            # 修復: 移除 HTML span，直接返回 Emoji 和文字以兼容舊版 Streamlit
             if proj_date > latest_date:
-                 return "<span class='status-risk'>🔴 落後</span>"
+                 return "🔴 落後" 
             elif proj_date <= latest_date:
-                 return "<span class='status-ok'>✅ 正常</span>"
+                 return "✅ 正常"
             else:
                  return "N/A"
         except: return "N/A"
     
     if not st.session_state.data.empty:
-        # 使用 HtmlColumn 渲染 HTML 格式的字串
+        # 使用 TextColumn 渲染字串
         st.session_state.data['交期狀態'] = st.session_state.data.apply(get_status_icon, axis=1)
 
     df = st.session_state.data
@@ -813,7 +816,8 @@ def run_app():
                         "預計交貨日": st.column_config.DateColumn("預計交貨日", format="YYYY-MM-DD", help="點擊修改日期"), 
                         
                         # 新增的追蹤欄位
-                        "交期狀態": st.column_config.HtmlColumn("期限判定", disabled=True, width="small"), # 紅綠燈 (HTML)
+                        # FIX: 將 HtmlColumn 改為 TextColumn 避免 AttributeError
+                        "交期狀態": st.column_config.TextColumn("期限判定", disabled=True, width="small"), 
                         "最後修改時間": st.column_config.TextColumn("最後修改", disabled=True, width="medium"), # 報價時間戳
                         
                         # GCS 連結
