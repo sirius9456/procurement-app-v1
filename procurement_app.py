@@ -120,13 +120,14 @@ def login_form():
     st.stop() 
 
 
-# --- GCS 檔案服務函式 (安全更新 V2.2.1) ---
+# --- GCS 檔案服務函式 (安全更新 V2.2.1 - 移除預設儲存桶檢查) ---
 
 def upload_attachment_to_gcs(file_obj, next_id):
     """將檔案上傳到 GCS，不設置公開權限 (儲存桶保持私有)。"""
-    if GCS_BUCKET_NAME == "procurement-attachments-bucket":
-        st.warning("GCS 儲存桶名稱未設置。請修改 GCS_BUCKET_NAME 變數。")
-        return None
+    # ⚠️ 註釋掉原始的預設儲存桶檢查，避免誤判。
+    # if GCS_BUCKET_NAME == "procurement-attachments-bucket":
+    #     st.warning("GCS 儲存桶名稱未設置。請修改 GCS_BUCKET_NAME 變數。")
+    #     return None
         
     try:
         # GCE 服務帳戶自動認證
