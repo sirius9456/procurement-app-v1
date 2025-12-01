@@ -288,9 +288,17 @@ def load_data_from_sheets():
                 data_df[col] = "" 
                 
         # 數據類型轉換與處理
-        data_df = data_df.astype({
-            'ID': 'Int64', '選取': 'bool', '單價': 'float', '數量': 'Int64', '總價': 'float'
-        })
+        # 檢查關鍵欄位是否存在，如果 Sheets 是空的， data_df.columns 為空，則跳過 astype
+        if 'ID' in data_df.columns:
+            data_df = data_df.astype({
+                'ID': 'Int64', '選取': 'bool', '單價': 'float', '數量': 'Int64', '總價': 'float'
+            })
+        else:
+             # 如果是空的 DataFrame (只有標題或沒有標題)，確保類型設定正確，但跳過 astype
+            for col in ['選取', '標記刪除']:
+                if col in data_df.columns:
+                    data_df[col] = data_df[col].astype(bool)
+            
         if '標記刪除' not in data_df.columns:
             data_df['標記刪除'] = False
 
@@ -320,6 +328,7 @@ def load_data_from_sheets():
         return data_df, project_metadata
 
     except Exception as e:
+        # 此處已經是錯誤處理，不應再次發生 astype 錯誤
         logging.exception("Google Sheets 數據載入時發生致命錯誤！") 
         
         st.error(f"❌ 數據載入失敗！請檢查 Sheets 分享權限、工作表名稱或憑證檔案。")
@@ -785,6 +794,7 @@ def run_app():
                 current_meta = st.session_state.project_metadata.get(target_proj, {'due_date': today})
                 
                 if operation == "修改專案資訊":
+                    handle_project_modification = st.empty().text_input # Placeholder for handle_project_modification function call (not present in the provided snippet)
                     st.markdown("##### ✏️ 專案資訊修改")
                     st.text_input("新專案名稱", value=target_proj, key="edit_new_name")
                     st.date_input("新專案交貨日", value=current_meta['due_date'], key="edit_new_date")
