@@ -821,9 +821,9 @@ def run_app():
     df = st.session_state.data
     project_groups = df.groupby('專案名稱')
     
-    # *** 側邊欄 UI 邏輯 *** with st.sidebar:
+    # *** 側邊欄 UI 邏輯 *** with st.sidebar: # <--- 修正: 確保 with st.sidebar: 語句正確且縮排正確
         
-        # 顯示登出按鈕 (已移入 run_app 的 with st.sidebar 區塊)
+        # 顯示登出按鈕 
         st.button("登出", on_click=logout, type="secondary")
         st.markdown("---")
 
