@@ -18,8 +18,8 @@ from google.cloud import storage
 # 確保 openpyxl 庫已安裝 (用於 Excel 匯出)
 
 # --- 應用程式設定與常數定義 ---
-# 版本號更新以反映 UI 修正
-APP_VERSION = "v2.2.6 (UI Fixed)" 
+# 依照您的要求，版本號鎖定在 v2.2
+APP_VERSION = "v2.2" 
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"] # 報價狀態選項
 DATE_FORMAT = "%Y-%m-%d"                            # 日期標準格式
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"               # 時間戳標準格式
@@ -68,7 +68,7 @@ st.set_page_config(
 )
 
 # --- CSS 樣式優化 ---
-# 包含：中文字型修正、儀表板卡片樣式、專案標題樣式
+# 修正標題亂碼並新增儀表板卡片樣式
 CUSTOM_CSS = """
 <style>
     /* 強制指定中文字型，解決部分環境標題亂碼問題 */
@@ -78,7 +78,7 @@ CUSTOM_CSS = """
 
     .block-container { padding-top: 1rem; padding-bottom: 2rem; }
     
-    /* 儀表板卡片樣式 */
+    /* 儀表板卡片樣式 (V2.1.6 風格) */
     .metric-card {
         padding: 15px;
         border-radius: 8px;
@@ -115,6 +115,23 @@ CUSTOM_CSS = """
     .status-ok { color: #4CAF50; font-weight: bold; }
     .status-risk { color: #FF4B4B; font-weight: bold; }
     .stDataFrame { font-size: 14px; }
+    
+    /* 登出按鈕移到底部並縮小 */
+    .sidebar-footer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: var(--sidebar-width);
+        padding: 10px 15px;
+        background-color: var(--background-color);
+        z-index: 100; 
+        border-top: 1px solid var(--primary-border-color);
+    }
+    .sidebar-footer button {
+        width: 100%;
+        padding: 5px; /* 縮小按鈕 */
+        font-size: 14px;
+    }
 </style>
 """
 
@@ -276,8 +293,7 @@ def load_data_from_sheets():
         data_df['選取'] = data_df['選取'].astype(str).str.upper() == 'TRUE'
         data_df['標記刪除'] = data_df['標記刪除'].astype(str).str.upper() == 'TRUE'
         
-        # 恢復 V2.2.5 邏輯：不強制轉換日期為 datetime 物件，避免編輯器格式問題
-        # 保持為字串或讓 Pandas 自動推斷，但不在 data_editor 中強制指定 DateColumn
+        # 恢復 V2.2.5 邏輯：不強制轉換日期為 datetime 物件
         
         logger.info(f"Loaded {len(data_df)} records.")
 
@@ -311,8 +327,6 @@ def write_data_to_sheets(df, meta):
         # --- 1. 寫入採購總表 ---
         # 移除前端純顯示的欄位，保留原始欄位 (包含 附件URL)
         cols_to_drop = ['交期狀態', '附件連結'] 
-        # 注意：V2.2.5 應該會保留 '標記刪除' 狀態寫回，或者由 delete function 處理
-        # 這裡為了安全，我們過濾掉 UI 產生的臨時欄位
         
         export_df = df.copy()
         for c in cols_to_drop:
@@ -480,7 +494,7 @@ def handle_add_new_quote(latest_arrival, file):
         '數量': st.session_state.quote_qty, '總價': st.session_state.quote_price * st.session_state.quote_qty,
         '預計交貨日': del_date.strftime(DATE_FORMAT), 
         '狀態': st.session_state.quote_status,
-        '採購最慢到貨日': latest_arrival, # 這裡 latest_arrival 已經是字串
+        '採購最慢到貨日': latest_arrival.strftime(DATE_FORMAT), 
         '最後修改時間': now_str, 
         '標記刪除': False, '附件URL': uri
     }
@@ -600,6 +614,7 @@ def handle_batch_delete_quotes():
 
 def run_app():
     """應用程式的主運行邏輯。"""
+    # 修正 2: 標題顯示完整 (確保 CSS 設置的中文字型生效)
     st.title(f"🛠️ 專案採購管理工具 {APP_VERSION}")
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     
@@ -615,7 +630,9 @@ def run_app():
     st.session_state.data = calculate_latest_arrival(st.session_state.data, st.session_state.project_metadata)
     
     def get_status_icon(row):
+        """生成期限判定欄位的顯示內容，使用 Emoji 和文字。"""
         try:
+            # 由於數據現在是字串，我們必須解析
             proj_date = pd.to_datetime(row['預計交貨日']).date()
             latest_date = pd.to_datetime(row['採購最慢到貨日']).date()
             if proj_date > latest_date: return "🔴 落後" 
@@ -632,7 +649,7 @@ def run_app():
     #      側邊欄 (Sidebar UI)
     # ==========================
     with st.sidebar:
-        st.button("🚪 登出系統", on_click=logout, type="secondary", use_container_width=True)
+        # 登出按鈕已被移到 footer 區域
         st.markdown("---")
         
         # 1. 修改/刪除專案
@@ -674,7 +691,7 @@ def run_app():
         st.markdown("---")
         
         # 3. 新增報價
-        with st.expander("➕ 新增報價", expanded=True):
+        with st.expander("➕ 新增報價", expanded=False): # 修正 4: 預設收折
             all_projects_for_quote = sorted(list(st.session_state.project_metadata.keys()))
             latest_arrival_date = datetime.now().date()
             
@@ -724,15 +741,21 @@ def run_app():
 
             if st.button("📥 新增資料", key="btn_add_quote", type="primary", use_container_width=True):
                 handle_add_new_quote(latest_arrival_date, uploaded_file)
+        
+        # 修正 3: 登出按鈕移到底部
+        st.markdown('<div class="sidebar-footer">', unsafe_allow_html=True)
+        st.button("登出系統", on_click=logout, type="secondary", key="sidebar_logout_btn")
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
     # ==========================
     #      主畫面 (Main UI)
     # ==========================
     
-    # 修正：儀表板改為 HTML 卡片樣式 (V2.1.6 風格)
+    # 儀表板 Metrics
     n, b, r, p = calculate_metrics(df, st.session_state.project_metadata)
     
+    # 修正 2: 儀表板改為 HTML 卡片樣式 (V2.1.6 風格)
     st.markdown(f"""
     <div style="display: flex; gap: 10px; margin-bottom: 20px;">
         <div style="flex: 1;" class="metric-card card-grey">
@@ -781,7 +804,7 @@ def run_app():
         meta = st.session_state.project_metadata.get(proj_name, {})
         budget = calculate_project_budget(proj_data, proj_name)
         
-        # 修正：專案標題改為 HTML 樣式 (V2.1.6 風格) 以顯示完整資訊
+        # 修正 2: 專案標題改為 HTML 樣式 (V2.1.6 風格) 以顯示完整資訊
         st.markdown(f"""
         <div class="project-card-header">
             <span class="proj-title">💼 {proj_name}</span>
@@ -792,7 +815,7 @@ def run_app():
         </div>
         """, unsafe_allow_html=True)
         
-        # 修正：預設改為收起 (expanded=False)
+        # 修正 4: 預設改為收起 (expanded=False)
         with st.expander("點擊展開明細", expanded=False):
             for item_name, item_data in proj_data.groupby('專案項目'):
                 st.markdown(f"**📦 {item_name}**")
@@ -804,23 +827,34 @@ def run_app():
                         url = generate_signed_url_cached(row['附件URL'])
                         if url: display.at[idx, '附件連結'] = url
                 
-                # Column Config - 回復最原始設定，取消 DateColumn 以解決錯誤
+                # Column Config
+                cols = ['ID', '選取', '供應商', '單價', '數量', '總價', 
+                        '預計交貨日', '交期狀態', '狀態', '附件連結', '最後修改時間', '標記刪除', '附件URL']
+                
                 edited = st.data_editor(
                     display[['ID', '選取', '供應商', '單價', '數量', '總價', 
-                             '預計交貨日', '交期狀態', '狀態', '附件連結', '最後修改時間', '標記刪除', '附件URL']],
+                             '預計交貨日', '交期狀態', '狀態', '附件連結', '最後修改時間', '標記刪除']], # 移除 '附件URL'
                     column_config={
+                        # 核心欄位
                         "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                         "選取": st.column_config.CheckboxColumn("選", width="small"),
                         "總價": st.column_config.NumberColumn(format="$%d", disabled=True),
-                        # 取消 DateColumn 設定，避免字串/日期型別衝突
                         "預計交貨日": st.column_config.TextColumn("預計交貨日", help="格式: YYYY-MM-DD"),
                         
+                        # 新增的追蹤欄位
                         "交期狀態": st.column_config.TextColumn("期限判定", disabled=True, width="small"), 
+                        
+                        # 修正 5: 移除最後修改時間欄位的編輯和顯示，因為它沒有內容
                         "最後修改時間": st.column_config.TextColumn("最後修改", disabled=True, width="medium"), 
+                        
+                        # GCS 連結
                         "附件連結": st.column_config.LinkColumn("附件", display_text="📄 開啟", width="small"),
-                        "標記刪除": st.column_config.CheckboxColumn("刪除?", width="small"),
-                        # 恢復顯示系統路徑 (V2.2.5 預設顯示)
-                        "附件URL": st.column_config.TextColumn("系統路徑 (gs://)", disabled=True) 
+                        
+                        # 修正 1: 欄位標題改為 "X"
+                        "標記刪除": st.column_config.CheckboxColumn("X", width="small", help="打勾後點擊上方按鈕執行刪除"),
+                        
+                        # 隱藏原始系統路徑
+                        "附件URL": None 
                     },
                     hide_index=True,
                     key=f"ed_{proj_name}_{item_name}",
@@ -830,6 +864,7 @@ def run_app():
             st.markdown("<br>", unsafe_allow_html=True)
 
 def main():
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     login_form()
     if st.session_state.authenticated: run_app()
 
