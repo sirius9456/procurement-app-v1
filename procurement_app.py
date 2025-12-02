@@ -389,7 +389,7 @@ def calculate_latest_arrival_dates(df, metadata):
 # ******************************
 
 def handle_master_save():
-    """批次處理所有 data_editor 的修改，並重新計算總價、更新專案時間戳記。"""
+    """批次處理所有 data_editor 的修改，並重新計算總價、更新個別報價時間戳記。"""
     
     if not st.session_state.edited_dataframes:
         st.info("沒有偵測到表格修改。")
@@ -398,9 +398,13 @@ def handle_master_save():
     main_df = st.session_state.data.copy()
     current_time_str = datetime.now().strftime(DATETIME_FORMAT)
     
-    affected_projects = set() 
+    # affected_projects = set() # 不再需要追蹤受影響的專案來更新時間
     changes_detected = False
     
+    # 確保 DataFrame 有 '最後修改時間' 欄位，如果沒有則建立並用空字串填充
+    if '最後修改時間' not in main_df.columns:
+        main_df['最後修改時間'] = ''
+
     for _, edited_df in st.session_state.edited_dataframes.items():
         if edited_df.empty: continue
         
@@ -414,22 +418,25 @@ def handle_master_save():
             row_changed = False
 
             # --- 數據比較與更新 ---
-            try:
-                date_str_parts = str(new_row['交期顯示']).strip().split(' ')
-                date_part = date_str_parts[0]
-                if main_df.loc[main_idx, '預計交貨日'] != date_part:
-                    datetime.strptime(date_part, "%Y-%m-%d")
-                    main_df.loc[main_idx, '預計交貨日'] = date_part
-                    row_changed = True
-            except:
-                pass
             
+            # 處理 DateColumn 返回的 datetime 物件
+            new_delivery_date = new_row['預計交貨日']
+            if pd.notna(new_delivery_date):
+                 new_delivery_date = pd.to_datetime(new_delivery_date).normalize() 
+                 
+                 # 比較 datetime 物件
+                 if main_df.loc[main_idx, '預計交貨日'] != new_delivery_date:
+                    main_df.loc[main_idx, '預計交貨日'] = new_delivery_date
+                    row_changed = True
+
+            # 檢查其他可更新欄位
             updatable_cols = ['選取', '供應商', '單價', '數量', '狀態', '標記刪除'] 
             for col in updatable_cols:
                  if str(main_df.loc[main_idx, col]) != str(new_row[col]):
                     main_df.loc[main_idx, col] = new_row[col]
                     row_changed = True
             
+            # 重新計算總價 (總是執行以確保數據一致)
             current_price = float(main_df.loc[main_idx, '單價'])
             current_qty = float(main_df.loc[main_idx, '數量'])
             new_total = current_price * current_qty
@@ -440,16 +447,19 @@ def handle_master_save():
             
             if row_changed:
                 changes_detected = True
-                proj = main_df.loc[main_idx, '專案名稱']
-                affected_projects.add(proj)
+                # 【新功能】更新單個報價的最後修改時間
+                main_df.loc[main_idx, '最後修改時間'] = current_time_str
+                # proj = main_df.loc[main_idx, '專案名稱'] # 不再需要
+                # affected_projects.add(proj) # 不再需要
                 
     if changes_detected:
         st.session_state.data = main_df
         
         updated_metadata = st.session_state.project_metadata.copy()
-        for proj in affected_projects:
-            if proj in updated_metadata:
-                updated_metadata[proj]['last_modified'] = current_time_str
+        # 【移除】不再更新專案的 last_modified 欄位
+        # for proj in affected_projects:
+        #     if proj in updated_metadata:
+        #         updated_metadata[proj]['last_modified'] = current_time_str 
         
         if write_data_to_sheets(st.session_state.data, updated_metadata):
             st.session_state.project_metadata = updated_metadata
@@ -496,7 +506,6 @@ def trigger_delete_confirmation():
     if not ids_to_delete:
         st.warning("沒有項目被標記為刪除。請先在表格中勾選 '刪除?' 欄位。")
         st.session_state.show_delete_confirm = False
-        # 清除可能存在的舊暫存
         if 'pending_delete_ids' in st.session_state:
             del st.session_state.pending_delete_ids
         return
@@ -515,7 +524,6 @@ def handle_batch_delete_quotes():
     """
     
     # 1. 從 Session State 讀取「鎖定」的 ID 列表
-    # 使用 .get() 避免報錯，若沒有則為空列表
     ids_to_delete = st.session_state.get('pending_delete_ids', [])
     
     if not ids_to_delete:
@@ -548,7 +556,7 @@ def handle_project_modification():
     """處理修改專案設定的邏輯"""
     target_proj = st.session_state.edit_target_project
     new_name = st.session_state.edit_new_name
-    new_date = st.session_state.edit_new_date
+    # new_date = st.session_state.edit_new_date # 移除編輯日期
     current_time_str = datetime.now().strftime(DATETIME_FORMAT)
     
     if not new_name:
@@ -560,8 +568,8 @@ def handle_project_modification():
         return
 
     meta = st.session_state.project_metadata.pop(target_proj)
-    meta['due_date'] = new_date
-    meta['last_modified'] = current_time_str
+    # meta['due_date'] = new_date # 移除編輯日期
+    # meta['last_modified'] = current_time_str # 【移除】不再更新專案的 last_modified
     st.session_state.project_metadata[new_name] = meta
     
     st.session_state.data.loc[st.session_state.data['專案名稱'] == target_proj, '專案名稱'] = new_name
@@ -606,13 +614,14 @@ def handle_add_new_project():
         st.error("專案名稱不能為空。")
         return
         
+    # 如果專案已存在，則更新其時程
     if project_name in st.session_state.project_metadata:
         st.warning(f"專案 '{project_name}' 已存在，將更新其時程設定。")
     
     st.session_state.project_metadata[project_name] = {
         'due_date': project_due_date, 
         'buffer_days': buffer_days,
-        'last_modified': current_time_str
+        'last_modified': current_time_str # 僅在新增/設定時更新此元數據
     }
     
     if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
@@ -646,16 +655,20 @@ def handle_add_new_quote(latest_arrival_date):
         
     total_price = price * qty
     
-    st.session_state.project_metadata[project_name]['last_modified'] = current_time_str
+    # st.session_state.project_metadata[project_name]['last_modified'] = current_time_str # 【移除】不再更新專案的 last_modified
 
     new_row = {
         'ID': st.session_state.next_id, '選取': False, '專案名稱': project_name, 
         '專案項目': item_name_to_use, '供應商': supplier, '單價': price, '數量': qty, 
         '總價': total_price, 
-        '預計交貨日': final_delivery_date.strftime(DATE_FORMAT),
+        # DateColumn 需要 datetime 物件
+        '預計交貨日': pd.to_datetime(final_delivery_date).normalize(), 
         '狀態': status, 
-        '採購最慢到貨日': latest_arrival_date.strftime(DATE_FORMAT),
+        # DateColumn 需要 datetime 物件
+        '採購最慢到貨日': pd.to_datetime(latest_arrival_date).normalize(), 
         '標記刪除': False,
+        # 【新功能】新增報價的最後修改時間
+        '最後修改時間': current_time_str, 
     }
     st.session_state.next_id += 1
     st.session_state.data = pd.concat([st.session_state.data, pd.DataFrame([new_row])], ignore_index=True)
@@ -664,6 +677,8 @@ def handle_add_new_quote(latest_arrival_date):
         st.success(f"✅ 已新增報價至 {project_name}！Sheets 已更新。")
     
     st.rerun()
+
+# *--- 4. 邏輯處理函式 - 結束 ---*
 
 # *--- 4. 邏輯處理函式 ---*
 # ******************************
@@ -1044,6 +1059,7 @@ def render_project_tables(df, project_metadata):
 # *--- 7. 主應用程式核心邏輯 ---*
 # ******************************
 
+
 def run_app():
     """運行應用程式的核心邏輯，在成功登入後調用。"""
     
@@ -1099,6 +1115,10 @@ def run_app():
     if not st.session_state.data.empty:
         # 建立一個新欄位 '交期判定'，專門存放圖示
         st.session_state.data['交期判定'] = st.session_state.data.apply(get_date_judgment_icon, axis=1)
+        
+        # 【新增】確保 '最後修改時間' 欄位存在，若不存在則初始化
+        if '最後修改時間' not in st.session_state.data.columns:
+            st.session_state.data['最後修改時間'] = ''
 
     df = st.session_state.data
     project_metadata = st.session_state.project_metadata
@@ -1133,6 +1153,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
