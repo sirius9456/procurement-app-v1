@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__) # 定義 logger
 
 # --- 應用程式設定 ---
-APP_VERSION = "v2.1.6 + Expander State Fix" # 更新版本號
+APP_VERSION = "v2.1.6 + Delete Fix" # 更新版本號
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
 DATE_FORMAT = "%Y-%m-%d" # 日期格式
 DATETIME_FORMAT = "%Y-%m-%d %H:%M" # 恢復 V2.1.6 時間戳格式
@@ -586,7 +586,7 @@ def handle_master_save():
 
 # 批次刪除的觸發函式
 def trigger_delete_confirmation():
-    """點擊 '刪除已標記項目' 按鈕時，觸發確認流程。(修復寫入失敗回滾)"""
+    """點擊 '刪除已標記項目' 按鈕時，觸發確認流程。(修正讀取編輯狀態的邏輯)"""
     
     temp_df = st.session_state.data.copy()
     
@@ -595,12 +595,15 @@ def trigger_delete_confirmation():
         [edited_df.set_index('ID')[['標記刪除']] for edited_df in st.session_state.edited_dataframes.values() if not edited_df.empty],
         axis=0, 
         ignore_index=False
-    )
+    ).astype({'標記刪除': bool}) # 確保布林類型，修正潛在的類型問題
     
+    # 修正: 使用更穩健的直接賦值來應用編輯的刪除標記
     if not combined_edited_df.empty:
-        temp_df = temp_df.set_index('ID')
-        temp_df.update(combined_edited_df)
-        temp_df = temp_df.reset_index()
+        for item_id, row in combined_edited_df.iterrows():
+            idx_in_main = temp_df[temp_df['ID'] == item_id].index
+            if not idx_in_main.empty:
+                # 僅更新 '標記刪除' 欄位
+                temp_df.loc[idx_in_main[0], '標記刪除'] = row['標記刪除']
 
     # 確保 '標記刪除' 是布林值，否則 tolist() 可能失敗
     temp_df['標記刪除'] = temp_df['標記刪除'].astype(bool) 
@@ -617,7 +620,7 @@ def trigger_delete_confirmation():
     st.rerun()
 
 def handle_batch_delete_quotes():
-    """執行批次刪除操作。(修復刪除失敗與回滾)"""
+    """執行批次刪除操作。(修正讀取編輯狀態的邏輯，確保刪除在無儲存情況下也能生效)"""
     
     main_df = st.session_state.data.copy()
     original_data = st.session_state.data.copy() # 儲存原始數據用於回滾
@@ -627,14 +630,16 @@ def handle_batch_delete_quotes():
         [edited_df.set_index('ID')[['標記刪除']] for edited_df in st.session_state.edited_dataframes.values() if not edited_df.empty],
         axis=0, 
         ignore_index=False
-    )
+    ).astype({'標記刪除': bool}) # 確保布林類型
     
-    # 這是關鍵的合併步驟，將編輯的 '標記刪除' 狀態應用到主數據框
+    # 修正: 使用更穩健的直接賦值來應用編輯的刪除標記
     if not combined_edited_df.empty:
-        main_df = main_df.set_index('ID')
-        main_df.update(combined_edited_df)
-        main_df = main_df.reset_index()
-
+        for item_id, row in combined_edited_df.iterrows():
+            idx_in_main = main_df[main_df['ID'] == item_id].index
+            if not idx_in_main.empty:
+                # 僅更新 '標記刪除' 欄位
+                main_df.loc[idx_in_main[0], '標記刪除'] = row['標記刪除']
+    
     main_df['標記刪除'] = main_df['標記刪除'].astype(bool)
     
     ids_to_delete = main_df[main_df['標記刪除'] == True]['ID'].tolist()
