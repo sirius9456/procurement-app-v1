@@ -700,6 +700,7 @@ def initialize_session_state():
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
 
+
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
     
@@ -1006,7 +1007,7 @@ def render_project_tables(df, project_metadata):
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
-# *--- 6. 模組化渲染函數 - render_sidebar_ui - 結束 ---*
+# *--- 6. 模組化渲染函數 - render_project_tables - 結束 ---*
 
 
 def render_dashboard(df, project_metadata):
@@ -1251,6 +1252,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
