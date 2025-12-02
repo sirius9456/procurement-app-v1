@@ -144,6 +144,8 @@ def login_form():
 # ******************************
 
 
+
+
 # ******************************
 # *--- 2. 數據讀取與寫入函式 ---*
 # ******************************
@@ -154,17 +156,16 @@ def load_data_from_sheets():
     
     if not SHEET_URL:
         st.info("❌ Google Sheets URL 尚未配置。使用空的數據結構。")
-        empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '標記刪除']) 
+        empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '標記刪除'])
         return empty_data, {}
 
     try:
         # --- 1. 授權與認證 ---
         if not GSHEETS_CREDENTIALS or not os.path.exists(GSHEETS_CREDENTIALS):
-             logging.warning("GSHEETS_CREDENTIALS_PATH 未配置或檔案不存在，嘗試使用默認認證。")
-             gc = gspread.service_account()
-        else:
-             gc = gspread.service_account(filename=GSHEETS_CREDENTIALS)
+             st.error(f"❌ 憑證錯誤：找不到憑證檔案 {GSHEETS_CREDENTIALS}")
+             raise FileNotFoundError("憑證檔案不存在或路徑錯誤")
             
+        gc = gspread.service_account(filename=GSHEETS_CREDENTIALS)
         sh = gc.open_by_url(SHEET_URL)
         
         # --- 2. 讀取採購總表 (Data) ---
@@ -172,11 +173,7 @@ def load_data_from_sheets():
         data_records = data_ws.get_all_records()
         data_df = pd.DataFrame(data_records)
 
-        required_cols = ['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '標記刪除']
-        for col in required_cols:
-            if col not in data_df.columns: 
-                data_df[col] = "" 
-                
+        # 數據類型轉換與處理 (使用更穩健的方式處理 astype)
         dtype_map = {
             'ID': 'Int64', 
             '選取': 'bool', 
@@ -193,6 +190,15 @@ def load_data_from_sheets():
 
         if '標記刪除' not in data_df.columns:
             data_df['標記刪除'] = False
+            
+        if '最後修改時間' not in data_df.columns:
+            data_df['最後修改時間'] = ''
+
+        # 【修正】將日期欄位轉換為 datetime 類型，以支援 DateColumn
+        if '預計交貨日' in data_df.columns:
+            data_df['預計交貨日'] = pd.to_datetime(data_df['預計交貨日'], errors='coerce', format=DATE_FORMAT) 
+        if '採購最慢到貨日' in data_df.columns:
+            data_df['採購最慢到貨日'] = pd.to_datetime(data_df['採購最慢到貨日'], errors='coerce', format=DATE_FORMAT) 
         
         # --- 3. 讀取專案設定 (Metadata) ---
         metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
@@ -221,7 +227,7 @@ def load_data_from_sheets():
         st.error(f"❌ 數據載入失敗！請檢查 Sheets 分享權限、工作表名稱或憑證檔案。")
         st.code(f"錯誤訊息: {e}")
         
-        empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '標記刪除'])
+        empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '標記刪除'])
         st.session_state.data_load_failed = True
         return empty_data, {}
 
@@ -233,30 +239,41 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         return False
         
     try:
-        if not GSHEETS_CREDENTIALS or not os.path.exists(GSHEETS_CREDENTIALS):
-             gc = gspread.service_account()
-        else:
-             gc = gspread.service_account(filename=GSHEETS_CREDENTIALS)
-
+        # --- 1. 授權與認證 ---
+        gc = gspread.service_account(filename=GSHEETS_CREDENTIALS)
         sh = gc.open_by_url(SHEET_URL)
         
         # --- 2. 寫入採購總表 (Data) ---
-        cols_to_drop = ['標記刪除', '交期顯示'] 
-        df_export = df_to_write.copy()
-        for col in cols_to_drop:
-            if col in df_export.columns:
-                df_export = df_export.drop(columns=[col])
+        # 移除僅供顯示用的欄位，避免寫入錯誤
+        cols_to_drop = ['交期判定', '交期顯示']
+        df_export = df_to_write.drop(columns=[c for c in cols_to_drop if c in df_to_write.columns], errors='ignore')
 
+        # 【關鍵修正】確保日期格式正確轉為字串 (YYYY-MM-DD)，否則 JSON 序列化會失敗導致無法寫入
+        for col in ['預計交貨日', '採購最慢到貨日']:
+            if col in df_export.columns:
+                # 先轉為 datetime 確保一致性，再轉字串，處理 NaT/NaN 為空字串
+                df_export[col] = pd.to_datetime(df_export[col], errors='coerce').dt.strftime(DATE_FORMAT).fillna("")
+                
+        # 處理布林值與空值，避免 JSON 錯誤
+        df_export = df_export.fillna("")
+        
+        # 確保所有數值型別轉換為 Python 原生型別 (int, float)，避免 numpy 型別導致錯誤
+        # 這是一個常見的 gspread 寫入錯誤原因
+        df_export = df_export.astype(object) 
+                
         data_ws = sh.worksheet(DATA_SHEET_NAME)
         data_ws.clear()
-        data_ws.update([df_export.columns.values.tolist()] + df_export.values.tolist())
+        
+        # 將 DataFrame 轉為列表列表 (List of Lists)
+        data_to_update = [df_export.columns.values.tolist()] + df_export.values.tolist()
+        data_ws.update(data_to_update)
         
         # --- 3. 寫入專案設定 (Metadata) ---
         metadata_list = [
             {'專案名稱': name, 
-             '專案交貨日': data['due_date'].strftime(DATE_FORMAT),
-             '緩衝天數': data['buffer_days'], 
-             '最後修改': data['last_modified']}
+             '專案交貨日': data['due_date'].strftime(DATE_FORMAT) if isinstance(data['due_date'], (datetime, date)) else str(data['due_date']),
+             '緩衝天數': int(data['buffer_days']), 
+             '最後修改': str(data['last_modified'])}
             for name, data in metadata_to_write.items()
         ]
         metadata_df = pd.DataFrame(metadata_list)
@@ -265,16 +282,17 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         if not metadata_df.empty:
             metadata_ws.update([metadata_df.columns.values.tolist()] + metadata_df.values.tolist())
             
-        st.cache_data.clear() 
+        st.cache_data.clear() # 清除讀取快取，確保下次讀到最新
         return True
         
     except Exception as e:
         logging.exception("Google Sheets 數據寫入時發生致命錯誤！")
-        st.error(f"❌ 數據寫回 Google Sheets 失敗！")
+        st.error(f"❌ 數據寫回 Google Sheets 失敗！請截圖此錯誤訊息。")
         st.code(f"寫入錯誤訊息: {e}")
         return False
-# *--- 2. 數據讀取與寫入函式 ---*
-# ******************************
+
+# *--- 2. 數據讀取與寫入函式 - 結束 ---*
+
 
 
 # ******************************
@@ -1168,6 +1186,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
