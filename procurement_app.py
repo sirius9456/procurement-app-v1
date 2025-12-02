@@ -696,13 +696,11 @@ def initialize_session_state():
 # ******************************
 
 
-# ******************************
-# *--- 6. 模組化渲染函數 ---*
-# ******************************
 
 # ******************************
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
+
 
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
@@ -948,8 +946,7 @@ def render_project_tables(df, project_metadata):
         # 建立 Expander key
         expander_key = f"expander_{proj_name}"
 
-        # 監聽 Expander 點擊事件，更新狀態 (如果需要修復收折問題，需要更複雜的邏輯)
-        # 暫時保留 V2.1.6 原始邏輯 (預設收合，除了第一個)
+        # 監聽 Expander 點擊事件
         with st.expander(label=f"專案：{proj_name} (點擊展開)", expanded=(i == 0)): 
             st.markdown(header_html, unsafe_allow_html=True)
             
@@ -966,16 +963,19 @@ def render_project_tables(df, project_metadata):
 
                 editable_df = item_data.copy()
                 
-                # 【關鍵修正】強制轉為 python date 物件，解決 Streamlit 判斷為字串或 timestamp 的問題
+                # 【最強制修正】逐行清洗資料，確保只有 date 物件或 None
                 if '預計交貨日' in editable_df.columns:
-                    editable_df['預計交貨日'] = pd.to_datetime(editable_df['預計交貨日'], errors='coerce').dt.date
+                    # 先轉為 datetime (處理字串)
+                    temp_series = pd.to_datetime(editable_df['預計交貨日'], errors='coerce')
+                    # 再轉為 date 物件，並將 NaT 強制轉為 None (關鍵步驟)
+                    editable_df['預計交貨日'] = temp_series.apply(lambda x: x.date() if pd.notnull(x) else None)
 
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                # 定義要顯示的欄位順序 (移除 'ID')
-                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期顯示', '狀態', '標記刪除']
+                # 【表格欄位調整】移除 '交期顯示' (混合文字)，新增 '交期判定' (純圖示)
+                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '標記刪除']
 
-                # 使用 column_order 來控制顯示，但傳入完整的 editable_df 以保留隱藏的 ID 欄位供後端邏輯使用
+                # 使用 column_order 來控制顯示
                 edited_df_value = st.data_editor(
                     editable_df,
                     column_order=cols_to_display,
@@ -986,14 +986,21 @@ def render_project_tables(df, project_metadata):
                         "數量": st.column_config.NumberColumn("數量"),
                         "總價": st.column_config.NumberColumn("總價", format="$%d", disabled=True),
                         
-                        # 【修正】設定為 DateColumn 實現日曆編輯，並使用標準格式字串
-                        "預計交貨日": st.column_config.DateColumn("預計交貨日", format="YYYY-MM-DD", help="點擊月曆圖示修改交期"), 
+                        # 【日期欄位】純淨的日期，支援月曆選單
+                        "預計交貨日": st.column_config.DateColumn(
+                            "預計交貨日", 
+                            min_value=datetime(2020, 1, 1).date(),
+                            max_value=datetime(2030, 12, 31).date(),
+                            format="YYYY-MM-DD", 
+                            step=1,
+                            help="點擊兩下以開啟月曆選單"
+                        ), 
                         
-                        "交期顯示": st.column_config.TextColumn("期限判定", disabled=True, width="medium", help="紅燈代表交期晚於最慢到貨日"), 
+                        # 【新欄位】獨立顯示判定圖示，簡單明瞭
+                        "交期判定": st.column_config.Column("判定", width="tiny", help="🔴: 延誤 / ✅: 準時", disabled=True),
                         
                         "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
-                        
-                        "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny", help="勾選後點擊上方按鈕執行刪除"), 
+                        "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny"), 
                     },
                     key=editor_key,
                     hide_index=True, 
@@ -1191,21 +1198,23 @@ def render_project_tables(df, project_metadata):
 
 
 
-# --- 主應用程式核心邏輯 (在登入成功後調用) ---
+# ******************************
+# *--- 7. 主應用程式核心邏輯 ---*
+# ******************************
+
 def run_app():
     """運行應用程式的核心邏輯，在成功登入後調用。"""
     
-    # ******************************
-    # *--- 7. 主應用程式核心邏輯 ---*
-    # ******************************
-    
+    # 修正: 確保所有 Expander 狀態都被追蹤
+    if 'expander_states' not in st.session_state:
+        st.session_state.expander_states = {}
+
     st.title(f"🛠️ 專案採購管理工具 {APP_VERSION}") 
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
     initialize_session_state()
-    today = datetime.now().date() 
 
-    # 1. 數據準備
+    # 數據自動計算：在初始化後，計算最慢到貨日
     st.session_state.data = calculate_latest_arrival_dates(
         st.session_state.data, 
         st.session_state.project_metadata
@@ -1214,35 +1223,42 @@ def run_app():
     if st.session_state.get('data_load_failed', False):
         st.warning("應用程式無法從 Google Sheets 載入數據，請檢查上方錯誤訊息。")
         
-    # 格式化日期顯示
-    def format_date_with_icon(row):
-        date_str = str(row['預計交貨日'])
+    # --- UI 核心邏輯開始 ---
+    
+    # 【新增】產生獨立的交期判定圖示
+    def get_date_judgment_icon(row):
         try:
-            v_date = pd.to_datetime(row['預計交貨日']).date()
-            l_date = pd.to_datetime(row['採購最慢到貨日']).date()
-            icon = "🔴" if v_date > l_date else "✅"
-            return f"{date_str} {icon}"
+            # 確保轉為 datetime
+            d_val = pd.to_datetime(row['預計交貨日'])
+            l_val = pd.to_datetime(row['採購最慢到貨日'])
+            
+            if pd.isna(d_val) or pd.isna(l_val):
+                return ""
+                
+            # 比較日期部分
+            if d_val.date() > l_val.date():
+                return "🔴" # 延遲
+            else:
+                return "✅" # 準時
         except:
-            return date_str
+            return ""
 
     if not st.session_state.data.empty:
-        st.session_state.data['交期顯示'] = st.session_state.data.apply(format_date_with_icon, axis=1)
+        # 建立一個新欄位 '交期判定'，專門存放圖示
+        st.session_state.data['交期判定'] = st.session_state.data.apply(get_date_judgment_icon, axis=1)
 
     df = st.session_state.data
+    project_metadata = st.session_state.project_metadata
+    today = datetime.now().date()
     
-    # 2. 渲染側邊欄
-    render_sidebar_ui(df, st.session_state.project_metadata, today)
-
-    # 3. 渲染儀表板
-    render_dashboard(df, st.session_state.project_metadata)
-
-    # 4. 渲染批次操作
+    # 渲染所有區塊
+    render_sidebar_ui(df, project_metadata, today)
+    render_dashboard(df, project_metadata)
     render_batch_operations()
+    render_project_tables(df, project_metadata) 
 
-    # 5. 渲染專案表格
-    render_project_tables(df, st.session_state.project_metadata)
-    
-    # *--- 7. 主應用程式核心邏輯 - 結束 ---*
+# *--- 7. 主應用程式核心邏輯 - 結束 ---*
+
 
 
 # --- 程式進入點 ---
@@ -1263,6 +1279,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
