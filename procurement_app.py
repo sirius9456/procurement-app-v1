@@ -12,6 +12,10 @@ import time
 
 # 確保 openpyxl 庫已安裝 (pip install openpyxl)
 
+# ******************************
+# *--- 0. 初始設定與環境變數 ---*
+# ******************************
+
 # 配置 Streamlit 日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__) # 定義 logger
@@ -89,14 +93,13 @@ CUSTOM_CSS = """
     /* 移除 GCS 預覽 Modal 樣式 */
 </style>
 """
+# *--- 0. 初始設定與環境變數 ---*
+# ******************************
 
-# ==============================================================================
-# GCS 服務相關函式 (已移除)
-# ==============================================================================
 
-# ==============================================================================
-# 登入與安全函式
-# ==============================================================================
+# ******************************
+# *--- 1. 登入與安全函式 ---*
+# ******************************
 
 def logout():
     """登出函式：清除驗證狀態並重新運行。"""
@@ -137,11 +140,13 @@ def login_form():
                     st.error("用戶名或密碼錯誤。")
             
     st.stop() 
+# *--- 1. 登入與安全函式 ---*
+# ******************************
 
 
-# ==============================================================================
-# 數據讀取與寫入函式 (Gspread)
-# ==============================================================================
+# ******************************
+# *--- 2. 數據讀取與寫入函式 ---*
+# ******************************
 
 @st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
 def load_data_from_sheets():
@@ -268,11 +273,13 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         st.error(f"❌ 數據寫回 Google Sheets 失敗！")
         st.code(f"寫入錯誤訊息: {e}")
         return False
+# *--- 2. 數據讀取與寫入函式 ---*
+# ******************************
 
 
-# ==============================================================================
-# 輔助函式區
-# ==============================================================================
+# ******************************
+# *--- 3. 輔助函式區 ---*
+# ******************************
 
 def add_business_days(start_date, num_days):
     """計算工作日 (跳過週末)。"""
@@ -373,10 +380,13 @@ def calculate_latest_arrival_dates(df, metadata):
     df = df.drop(columns=['due_date', 'buffer_days', '採購最慢到貨日_NEW', 'due_date_ts'], errors='ignore') 
     
     return df
+# *--- 3. 輔助函式區 ---*
+# ******************************
 
-# ==============================================================================
-# 邏輯處理函式
-# ==============================================================================
+
+# ******************************
+# *--- 4. 邏輯處理函式 ---*
+# ******************************
 
 def handle_master_save():
     """批次處理所有 data_editor 的修改，並重新計算總價、更新專案時間戳記。"""
@@ -633,9 +643,13 @@ def handle_add_new_quote(latest_arrival_date):
         st.success(f"✅ 已新增報價至 {project_name}！Sheets 已更新。")
     
     st.rerun()
+# *--- 4. 邏輯處理函式 ---*
+# ******************************
 
 
-# --- Session State 初始化函式 ---
+# ******************************
+# *--- 5. Session State 初始化函式 ---*
+# ******************************
 def initialize_session_state():
     """初始化所有 Streamlit Session State 變數。"""
     today = datetime.now().date()
@@ -656,11 +670,13 @@ def initialize_session_state():
     if 'calculated_delivery_date' not in st.session_state: st.session_state.calculated_delivery_date = today
     if 'show_delete_confirm' not in st.session_state: st.session_state.show_delete_confirm = False
     if 'delete_count' not in st.session_state: st.session_state.delete_count = 0
+# *--- 5. Session State 初始化函式 ---*
+# ******************************
 
 
-# ==============================================================================
-# 模組化渲染函數
-# ==============================================================================
+# ******************************
+# *--- 6. 模組化渲染函數 ---*
+# ******************************
 
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
@@ -668,6 +684,7 @@ def render_sidebar_ui(df, project_metadata, today):
     with st.sidebar:
         
         # --- 區塊 1: 修改/刪除專案 ---
+        # *--- render_sidebar_ui - 區塊 1: 修改/刪除專案 ---*
         with st.expander("✏️ 修改/刪除專案資訊", expanded=False): 
             all_projects = sorted(list(project_metadata.keys()))
             
@@ -702,10 +719,12 @@ def render_sidebar_ui(df, project_metadata, today):
                         
             else: 
                 st.info("無專案可修改/刪除。請在下方新增專案。")
+        # *--- render_sidebar_ui - 區塊 1: 修改/刪除專案 - 結束 ---*
         
         st.markdown("---")
         
         # --- 區塊 2: 新增/設定專案時程 ---
+        # *--- render_sidebar_ui - 區塊 2: 新增/設定專案時程 ---*
         with st.expander("➕ 新增/設定專案時程", expanded=False): 
             st.text_input("專案名稱 (Project Name)", key="new_proj_name")
             
@@ -717,10 +736,12 @@ def render_sidebar_ui(df, project_metadata, today):
 
             if st.button("💾 儲存專案設定", key="btn_save_proj", use_container_width=True):
                 handle_add_new_project()
+        # *--- render_sidebar_ui - 區塊 2: 新增/設定專案時程 - 結束 ---*
         
         st.markdown("---")
         
         # --- 區塊 3: 新增報價 ---
+        # *--- render_sidebar_ui - 區塊 3: 新增報價 ---*
         with st.expander("➕ 新增報價", expanded=False): 
             all_projects_for_quote = sorted(list(project_metadata.keys()))
             latest_arrival_date = today 
@@ -780,15 +801,18 @@ def render_sidebar_ui(df, project_metadata, today):
             
             if st.button("📥 新增資料", key="btn_add_quote", type="primary", use_container_width=True):
                 handle_add_new_quote(latest_arrival_date)
+        # *--- render_sidebar_ui - 區塊 3: 新增報價 - 結束 ---*
 
 
         # 恢復 V2.1.6 原始登出按鈕位置
         st.button("🚪 登出系統", on_click=logout, type="secondary", key="sidebar_logout_btn")
+# *--- 6. 模組化渲染函數 - render_sidebar_ui - 結束 ---*
 
 
 def render_dashboard(df, project_metadata):
     """渲染頂部儀表板區塊。"""
     
+    # *--- render_dashboard - 儀表板區塊 ---*
     total_projects, total_budget, risk_items, pending_quotes = calculate_dashboard_metrics(df, project_metadata)
 
     st.subheader("📊 總覽儀表板")
@@ -828,11 +852,13 @@ def render_dashboard(df, project_metadata):
         """, unsafe_allow_html=True)
     
     st.markdown("---")
+    # *--- render_dashboard - 儀表板區塊 - 結束 ---*
 
 
 def render_batch_operations():
     """渲染儲存/刪除按鈕及確認對話框。"""
     
+    # *--- render_batch_operations - 批次操作區塊 ---*
     col_save, col_delete = st.columns([0.8, 0.2])
     
     is_locked = st.session_state.show_delete_confirm
@@ -861,11 +887,13 @@ def render_batch_operations():
                 st.rerun()
 
     st.markdown("---")
+    # *--- render_batch_operations - 批次操作區塊 - 結束 ---*
     
     
 def render_project_tables(df, project_metadata):
     """渲染主介面中所有專案的 Data Editor 表格。"""
     
+    # *--- render_project_tables - 專案表格區塊 ---*
     if df.empty:
         st.info("目前沒有採購報價資料。")
         return
@@ -943,11 +971,16 @@ def render_project_tables(df, project_metadata):
                       convert_df_to_excel(df), 
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    # *--- render_project_tables - 專案表格區塊 - 結束 ---*
 
 
 # --- 主應用程式核心邏輯 (在登入成功後調用) ---
 def run_app():
     """運行應用程式的核心邏輯，在成功登入後調用。"""
+    
+    # ******************************
+    # *--- 7. 主應用程式核心邏輯 ---*
+    # ******************************
     
     st.title(f"🛠️ 專案採購管理工具 {APP_VERSION}") 
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -991,10 +1024,17 @@ def run_app():
 
     # 5. 渲染專案表格
     render_project_tables(df, st.session_state.project_metadata)
+    
+    # *--- 7. 主應用程式核心邏輯 - 結束 ---*
 
 
 # --- 程式進入點 ---
 def main():
+    
+    # ******************************
+    # *--- 8. 程式進入點 ---*
+    # ******************************
+    
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True) 
         
     login_form()
@@ -1004,3 +1044,5 @@ def main():
         
 if __name__ == "__main__":
     main()
+# *--- 8. 程式進入點 - 結束 ---*
+# ******************************
