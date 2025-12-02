@@ -701,7 +701,6 @@ def initialize_session_state():
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
 
-
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
     
@@ -963,16 +962,17 @@ def render_project_tables(df, project_metadata):
 
                 editable_df = item_data.copy()
                 
-                # 【最強制修正】逐行清洗資料，確保只有 date 物件或 None
+                # 【關鍵修正】逐行清洗資料，確保只有 Python date 物件或 None
+                # 這一步驟是確保 Streamlit 顯示月曆選單的核心
                 if '預計交貨日' in editable_df.columns:
-                    # 先轉為 datetime (處理字串)
+                    # 先轉為 datetime (容錯)
                     temp_series = pd.to_datetime(editable_df['預計交貨日'], errors='coerce')
-                    # 再轉為 date 物件，並將 NaT 強制轉為 None (關鍵步驟)
+                    # 再強制轉為 date 物件，NaT 轉為 None
                     editable_df['預計交貨日'] = temp_series.apply(lambda x: x.date() if pd.notnull(x) else None)
 
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                # 【表格欄位調整】移除 '交期顯示' (混合文字)，新增 '交期判定' (純圖示)
+                # 【表格欄位調整】欄位顯示順序：新增 '交期判定'
                 cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '標記刪除']
 
                 # 使用 column_order 來控制顯示
@@ -996,7 +996,7 @@ def render_project_tables(df, project_metadata):
                             help="點擊兩下以開啟月曆選單"
                         ), 
                         
-                        # 【新欄位】獨立顯示判定圖示，簡單明瞭
+                        # 【新欄位】獨立顯示判定圖示，禁止編輯
                         "交期判定": st.column_config.Column("判定", width="tiny", help="🔴: 延誤 / ✅: 準時", disabled=True),
                         
                         "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
@@ -1019,184 +1019,7 @@ def render_project_tables(df, project_metadata):
                       convert_df_to_excel(df), 
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
-
 # *--- 6. 模組化渲染函數 - render_project_tables - 結束 ---*
-
-
-
-
-
-
-def render_dashboard(df, project_metadata):
-    """渲染頂部儀表板區塊。"""
-    
-    # *--- render_dashboard - 儀表板區塊 ---*
-    total_projects, total_budget, risk_items, pending_quotes = calculate_dashboard_metrics(df, project_metadata)
-
-    st.subheader("📊 總覽儀表板")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown(f"""
-        <div class='metric-box' style='background-color:#33343c;'>
-            <div class='metric-title'>專案總數</div>
-            <div class='metric-value'>{total_projects}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div class='metric-box' style='background-color:#1b4d3e;'>
-            <div class='metric-title'>預估/已選總預算</div>
-            <div class='metric-value'>${total_budget:,.0f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col3:
-        st.markdown(f"""
-        <div class='metric-box' style='background-color:#5a2a2a;'>
-            <div class='metric-title'>交期風險項目</div>
-            <div class='metric-value'>{risk_items}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col4:
-        st.markdown(f"""
-        <div class='metric-box' style='background-color:#2a3b5a;'>
-            <div class='metric-title'>待處理報價數量</div>
-            <div class='metric-value'>{pending_quotes}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    # *--- render_dashboard - 儀表板區塊 - 結束 ---*
-
-
-def render_batch_operations():
-    """渲染儲存/刪除按鈕及確認對話框。"""
-    
-    # *--- render_batch_operations - 批次操作區塊 ---*
-    col_save, col_delete = st.columns([0.8, 0.2])
-    
-    is_locked = st.session_state.show_delete_confirm
-    
-    with col_save:
-        if st.button("💾 儲存表格修改並計算總價/預算", type="primary", disabled=is_locked):
-            handle_master_save()
-            
-    with col_delete:
-        if st.button("🔴 刪除已標記項目", type="secondary", disabled=is_locked, key="btn_trigger_delete"):
-            trigger_delete_confirmation()
-
-    # 模擬確認對話框
-    if st.session_state.show_delete_confirm:
-        st.error(f"⚠️ 確認永久刪除 **{st.session_state.delete_count}** 筆已標記的報價嗎？此操作不可逆！")
-        
-        col_confirm_yes, col_confirm_no, _ = st.columns([0.2, 0.2, 0.6])
-        
-        with col_confirm_yes:
-            if st.button("✅ 確認刪除", key="confirm_delete_yes", type="primary"):
-                handle_batch_delete_quotes()
-        
-        with col_confirm_no:
-            if st.button("❌ 取消", key="confirm_delete_no"):
-                st.session_state.show_delete_confirm = False
-                st.rerun()
-
-    st.markdown("---")
-    # *--- render_batch_operations - 批次操作區塊 - 結束 ---*
-    
-    
-def render_project_tables(df, project_metadata):
-    """渲染主介面中所有專案的 Data Editor 表格。"""
-    
-    # *--- render_project_tables - 專案表格區塊 ---*
-    if df.empty:
-        st.info("目前沒有採購報價資料。")
-        return
-        
-    project_groups = df.groupby('專案名稱')
-    project_names = list(project_groups.groups.keys())
-    
-    is_locked = st.session_state.show_delete_confirm
-
-    for i, proj_name in enumerate(project_names):
-        proj_data = project_groups.get_group(proj_name)
-        meta = project_metadata.get(proj_name, {})
-        proj_budget = calculate_project_budget(df, proj_name)
-        
-        last_modified_proj = meta.get('last_modified', 'N/A')
-        if not last_modified_proj.strip(): last_modified_proj = 'N/A'
-             
-        header_html = f"""
-        <span class='project-header'>💼 專案: {proj_name}</span> &nbsp;|&nbsp; 
-        <span class='project-header'>總預算: ${proj_budget:,.0f}</span> &nbsp;|&nbsp; 
-        <span class='meta-info'>交期: {meta.get('due_date')}</span> 
-        <span style='float:right; font-size:14px; color:#FFC107;'>🕒 最後修改: {last_modified_proj}</span>
-        """
-        
-        # 恢復 V2.1.6 原始 Expander 邏輯 (預設收合，除了第一個)
-        with st.expander(label=f"專案：{proj_name} (點擊展開)", expanded=(i == 0)): 
-            st.markdown(header_html, unsafe_allow_html=True)
-            
-            for item_name, item_data in proj_data.groupby('專案項目'):
-                
-                has_selection = item_data['選取'].any()
-                sub_total = item_data[item_data['選取']]['總價'].sum() if has_selection else item_data['總價'].min()
-                calc_method = "(已選)" if has_selection else "(預估)"
-                
-                st.markdown(f"""
-                <span class='item-header'>📦 {item_name}</span> 
-                <span class='meta-info'> | 計入: ${sub_total:,.0f} {calc_method}</span>
-                """, unsafe_allow_html=True)
-
-                editable_df = item_data.copy()
-                editor_key = f"editor_{proj_name}_{item_name}"
-                
-                # 定義要顯示的欄位順序 (移除 'ID')
-                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '交期顯示', '狀態', '標記刪除']
-
-                # 使用 column_order 來控制顯示，但傳入完整的 editable_df 以保留隱藏的 ID 欄位供後端邏輯使用
-                edited_df_value = st.data_editor(
-                    editable_df,
-                    column_order=cols_to_display,
-                    column_config={
-                        # 移除 ID 的 config
-                        "選取": st.column_config.CheckboxColumn("選取", width="tiny"), 
-                        "供應商": st.column_config.Column("供應商", disabled=False), 
-                        "單價": st.column_config.NumberColumn("單價", format="$%d"),
-                        "數量": st.column_config.NumberColumn("數量"),
-                        "總價": st.column_config.NumberColumn("總價", format="$%d", disabled=True),
-                        
-                        "交期顯示": st.column_config.TextColumn("預計交貨日 (YYYY-MM-DD)", width="medium", help="可編輯，圖示會自動更新"), 
-                        
-                        "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
-                        
-                        "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny", help="勾選後點擊上方按鈕執行刪除"), 
-                    },
-                    key=editor_key,
-                    hide_index=True, 
-                    use_container_width=True,
-                    height=150 + (len(item_data) * 35) if len(item_data) > 3 else 150,
-                    disabled=is_locked
-                )
-                
-                st.session_state.edited_dataframes[item_name] = edited_df_value 
-                st.markdown("---")
-    
-    # *** 資料匯出區塊 ***
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.subheader("💾 資料匯出")
-    st.download_button("📥 下載 Excel 報表", 
-                      convert_df_to_excel(df), 
-                      f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
-                      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    
-    # *--- render_project_tables - 專案表格區塊 - 結束 ---*
-
-
 
 # ******************************
 # *--- 7. 主應用程式核心邏輯 ---*
@@ -1279,6 +1102,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
