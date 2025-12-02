@@ -700,6 +700,10 @@ def initialize_session_state():
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
 
+# ******************************
+# *--- 6. 模組化渲染函數 ---*
+# ******************************
+
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
     
@@ -962,10 +966,9 @@ def render_project_tables(df, project_metadata):
 
                 editable_df = item_data.copy()
                 
-                # 【重要修正】強制將日期欄位轉換為 datetime 物件，確保 DateColumn 生效
-                # 即使緩存中的數據是字串，這裡也會被修正
+                # 【關鍵修正】強制轉為 python date 物件，解決 Streamlit 判斷為字串或 timestamp 的問題
                 if '預計交貨日' in editable_df.columns:
-                    editable_df['預計交貨日'] = pd.to_datetime(editable_df['預計交貨日'], errors='coerce')
+                    editable_df['預計交貨日'] = pd.to_datetime(editable_df['預計交貨日'], errors='coerce').dt.date
 
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
@@ -1010,7 +1013,12 @@ def render_project_tables(df, project_metadata):
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
+
 # *--- 6. 模組化渲染函數 - render_project_tables - 結束 ---*
+
+
+
+
 
 
 def render_dashboard(df, project_metadata):
@@ -1255,6 +1263,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
