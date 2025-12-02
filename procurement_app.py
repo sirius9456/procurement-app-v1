@@ -716,6 +716,10 @@ def initialize_session_state():
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
 
+# ******************************
+# *--- 6. 模組化渲染函數 ---*
+# ******************************
+
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
     
@@ -741,7 +745,6 @@ def render_sidebar_ui(df, project_metadata, today):
                 if operation == "修改專案資訊":
                     st.markdown("##### ✏️ 專案資訊修改")
                     st.text_input("新專案名稱", value=target_proj, key="edit_new_name")
-                    # 已移除「新專案交貨日」輸入，交貨日修改已移至「新增/設定專案時程」區塊
                     
                     if st.button("確認修改專案名稱", type="primary", use_container_width=True): 
                         handle_project_modification()
@@ -761,7 +764,7 @@ def render_sidebar_ui(df, project_metadata, today):
         # --- 區塊 2: 新增/設定專案時程 ---
         # *--- render_sidebar_ui - 區塊 2: 新增/設定專案時程 ---*
         with st.expander("➕ 新增/設定專案時程", expanded=False): 
-            # 新增提示訊息
+            # 【新增】提示訊息
             st.info("💡 若輸入現有專案名稱，將更新該專案的交貨日與緩衝天數。")
             
             st.text_input("專案名稱 (Project Name)", key="new_proj_name")
@@ -962,16 +965,12 @@ def render_project_tables(df, project_metadata):
         latest_arrival_proj = due_date_val - timedelta(days=buffer_days_val)
         latest_arrival_str = latest_arrival_proj.strftime(DATE_FORMAT)
 
-        last_modified_proj = meta.get('last_modified', 'N/A')
-        if not last_modified_proj.strip(): last_modified_proj = 'N/A'
-             
-        # 【修改】標題列新增「最慢到貨」資訊 (黃灰色顯示)
+        # 【修改】標題列移除專案最後修改時間 (last_modified)
         header_html = f"""
         <span class='project-header'>💼 專案: {proj_name}</span> &nbsp;|&nbsp; 
         <span class='project-header'>總預算: ${proj_budget:,.0f}</span> &nbsp;|&nbsp; 
         <span class='meta-info'>交期: {meta.get('due_date')}</span> &nbsp;|&nbsp;
         <span class='meta-info' style='color:#a8a8a8;'>⚠️ 最慢到貨: {latest_arrival_str}</span>
-        <span style='float:right; font-size:14px; color:#FFC107;'>🕒 最後修改: {last_modified_proj}</span>
         """
         
         # 建立 Expander key
@@ -1003,11 +1002,16 @@ def render_project_tables(df, project_metadata):
                 if '採購最慢到貨日' in editable_df.columns:
                     temp_limit = pd.to_datetime(editable_df['採購最慢到貨日'], errors='coerce')
                     editable_df['採購最慢到貨日'] = temp_limit.apply(lambda x: x.date() if pd.notnull(x) else None)
+                
+                # 確保 '最後修改時間' 欄位存在
+                if '最後修改時間' not in editable_df.columns:
+                    editable_df['最後修改時間'] = ''
+
 
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                # 【表格欄位調整】欄位顯示順序：'採購最慢到貨日' 不顯示在表格中
-                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '標記刪除']
+                # 【表格欄位調整】欄位顯示順序：新增 '最後修改時間'
+                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '標記刪除']
 
                 # 使用 column_order 來控制顯示
                 edited_df_value = st.data_editor(
@@ -1034,6 +1038,15 @@ def render_project_tables(df, project_metadata):
                         "交期判定": st.column_config.Column("判定", width="tiny", help="❌: 延誤 / ✅: 準時", disabled=True),
                         
                         "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
+                        
+                        # 【新欄位配置】
+                        "最後修改時間": st.column_config.TextColumn(
+                            "最後修改時間",
+                            disabled=True,
+                            width="medium",
+                            help="報價項目最後儲存的時間"
+                        ),
+                        
                         "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny"), 
                     },
                     key=editor_key,
@@ -1053,6 +1066,8 @@ def render_project_tables(df, project_metadata):
                       convert_df_to_excel(df), 
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
 # *--- 6. 模組化渲染函數 - render_project_tables - 結束 ---*
 
 # ******************************
@@ -1153,6 +1168,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
