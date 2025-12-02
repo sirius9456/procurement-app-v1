@@ -150,6 +150,7 @@ def login_form():
 # *--- 2. 數據讀取與寫入函式 ---*
 # ******************************
 
+
 @st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
 def load_data_from_sheets():
     """直接使用 gspread 讀取 Google Sheets 中的數據。"""
@@ -290,6 +291,7 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         st.error(f"❌ 數據寫回 Google Sheets 失敗！請截圖此錯誤訊息。")
         st.code(f"寫入錯誤訊息: {e}")
         return False
+
 
 # *--- 2. 數據讀取與寫入函式 - 結束 ---*
 
@@ -1186,6 +1188,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
