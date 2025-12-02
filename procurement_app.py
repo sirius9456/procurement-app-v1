@@ -701,6 +701,7 @@ def initialize_session_state():
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
 
+
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
     
@@ -932,13 +933,29 @@ def render_project_tables(df, project_metadata):
         meta = project_metadata.get(proj_name, {})
         proj_budget = calculate_project_budget(df, proj_name)
         
+        # --- 計算最慢到貨日 (專案交期 - 緩衝天數) ---
+        # 確保 due_date 是 date 物件，以便進行計算
+        due_date_val = meta.get('due_date')
+        if isinstance(due_date_val, str):
+            try:
+                due_date_val = datetime.strptime(due_date_val, "%Y-%m-%d").date()
+            except:
+                due_date_val = datetime.now().date()
+        
+        # 取得緩衝天數並計算
+        buffer_days_val = int(meta.get('buffer_days', 7))
+        latest_arrival_proj = due_date_val - timedelta(days=buffer_days_val)
+        latest_arrival_str = latest_arrival_proj.strftime(DATE_FORMAT)
+
         last_modified_proj = meta.get('last_modified', 'N/A')
         if not last_modified_proj.strip(): last_modified_proj = 'N/A'
              
+        # 【修改】標題列新增「最慢到貨」資訊 (黃灰色顯示)
         header_html = f"""
         <span class='project-header'>💼 專案: {proj_name}</span> &nbsp;|&nbsp; 
         <span class='project-header'>總預算: ${proj_budget:,.0f}</span> &nbsp;|&nbsp; 
-        <span class='meta-info'>交期: {meta.get('due_date')}</span> 
+        <span class='meta-info'>交期: {meta.get('due_date')}</span> &nbsp;|&nbsp;
+        <span class='meta-info' style='color:#a8a8a8;'>⚠️ 最慢到貨: {latest_arrival_str}</span>
         <span style='float:right; font-size:14px; color:#FFC107;'>🕒 最後修改: {last_modified_proj}</span>
         """
         
@@ -963,16 +980,18 @@ def render_project_tables(df, project_metadata):
                 editable_df = item_data.copy()
                 
                 # 【關鍵修正】逐行清洗資料，確保只有 Python date 物件或 None
-                # 這一步驟是確保 Streamlit 顯示月曆選單的核心
                 if '預計交貨日' in editable_df.columns:
-                    # 先轉為 datetime (容錯)
                     temp_series = pd.to_datetime(editable_df['預計交貨日'], errors='coerce')
-                    # 再強制轉為 date 物件，NaT 轉為 None
                     editable_df['預計交貨日'] = temp_series.apply(lambda x: x.date() if pd.notnull(x) else None)
+                
+                # 確保採購最慢到貨日也是純 date 格式 (用於判定邏輯，雖然不顯示在表格)
+                if '採購最慢到貨日' in editable_df.columns:
+                    temp_limit = pd.to_datetime(editable_df['採購最慢到貨日'], errors='coerce')
+                    editable_df['採購最慢到貨日'] = temp_limit.apply(lambda x: x.date() if pd.notnull(x) else None)
 
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                # 【表格欄位調整】欄位顯示順序：新增 '交期判定'
+                # 【表格欄位調整】欄位顯示順序：'採購最慢到貨日' 不顯示在表格中
                 cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '標記刪除']
 
                 # 使用 column_order 來控制顯示
@@ -994,10 +1013,10 @@ def render_project_tables(df, project_metadata):
                             format="YYYY-MM-DD", 
                             step=1,
                             help="點擊兩下以開啟月曆選單"
-                        ), 
+                        ),
                         
-                        # 【新欄位】獨立顯示判定圖示，禁止編輯
-                        "交期判定": st.column_config.Column("判定", width="tiny", help="🔴: 延誤 / ✅: 準時", disabled=True),
+                        # 【判定欄位】獨立顯示判定圖示，禁止編輯
+                        "交期判定": st.column_config.Column("判定", width="tiny", help="❌: 延誤 / ✅: 準時", disabled=True),
                         
                         "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
                         "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny"), 
@@ -1034,6 +1053,16 @@ def run_app():
 
     st.title(f"🛠️ 專案採購管理工具 {APP_VERSION}") 
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+    
+    # 【CSS 修正】強制將日曆圖示反轉為亮色 (invert 100%)，解決深色模式下看不清的問題
+    st.markdown("""
+        <style>
+        [data-testid="stDataFrame"] input[type="date"]::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+            cursor: pointer;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
     initialize_session_state()
 
@@ -1048,7 +1077,7 @@ def run_app():
         
     # --- UI 核心邏輯開始 ---
     
-    # 【新增】產生獨立的交期判定圖示
+    # 【判定邏輯更新】
     def get_date_judgment_icon(row):
         try:
             # 確保轉為 datetime
@@ -1059,10 +1088,11 @@ def run_app():
                 return ""
                 
             # 比較日期部分
+            # 若 預計交貨日 > 最慢到貨日 -> 延遲 (❌)
             if d_val.date() > l_val.date():
-                return "🔴" # 延遲
+                return "❌" # 延遲
             else:
-                return "✅" # 準時
+                return "✅" # 準時 (含當天)
         except:
             return ""
 
@@ -1079,6 +1109,7 @@ def run_app():
     render_dashboard(df, project_metadata)
     render_batch_operations()
     render_project_tables(df, project_metadata) 
+
 
 # *--- 7. 主應用程式核心邏輯 - 結束 ---*
 
@@ -1102,6 +1133,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
