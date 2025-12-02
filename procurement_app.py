@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__) # 定義 logger
 
 # --- 應用程式設定 ---
-APP_VERSION = "v2.1.6 + Expander/Delete Fix" # 更新版本號
+APP_VERSION = "v2.1.6 + Keyless Expander Fix" # 更新版本號
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
 DATE_FORMAT = "%Y-%m-%d" # 日期格式
 DATETIME_FORMAT = "%Y-%m-%d %H:%M" # 恢復 V2.1.6 時間戳格式
@@ -1141,10 +1141,13 @@ def run_app():
             
             expander_key = f"expander_{proj_name}"
 
-            # 修正 1: 移除手動的 st.session_state[expander_key] 邏輯，依賴 Streamlit 內建的 key 狀態管理
-            
-            # 使用 st.expander，並讓 Streamlit 處理它的狀態持久性
-            with st.expander(label=f"專案：{proj_name} (點擊展開)", expanded=False, key=expander_key): 
+            # 修正 1: Expander 狀態管理 - 初始化 Expander 狀態到 Session State
+            if expander_key not in st.session_state:
+                 st.session_state[expander_key] = False # 預設收合
+
+            # 修正 1: Expander 狀態管理 - 確保 Expander 讀取 Session State
+            # 移除 key 參數以解決 TypeError，但必須手動處理狀態切換
+            with st.expander(label=f"專案：{proj_name} (點擊展開)", expanded=st.session_state[expander_key]): 
                 st.markdown(header_html, unsafe_allow_html=True)
                 
                 for item_name, item_data in proj_data.groupby('專案項目'):
@@ -1166,18 +1169,13 @@ def run_app():
                     editable_df['附件連結'] = None
                     editable_df['預覽'] = None
                     
-                    # 使用 lambda 函數來確保 set_preview 傳遞正確的參數
-                    def create_preview_callback(url, mime_type, item_id):
-                        # 這個內部函數是為了確保在迴圈中，每個按鈕都能引用到正確的 URL/MIME Type
-                        return lambda: set_preview(url, mime_type, item_id)
-                    
-                    def set_preview(url, mime_type, item_id):
-                        # 設置狀態並觸發重新運行以顯示 Modal
+                    # 定義一個切換 Expander 狀態的回調函式
+                    def toggle_expander_and_set_preview(url, mime_type, expander_key):
                         st.session_state.preview_url = url
                         st.session_state.preview_type = mime_type
                         # 設置 Expander 狀態為 True，確保預覽顯示後 Expander 不會收合
-                        st.session_state[f"expander_{proj_name}"] = True 
-
+                        st.session_state[expander_key] = True 
+                    
                     # 預處理附件連結
                     for idx_orig in editable_df.index: # 使用原始索引來操作 df
                         gcs_uri = editable_df.loc[idx_orig, '附件URL']
@@ -1193,7 +1191,8 @@ def run_app():
                                 item_id = editable_df.loc[idx_orig, 'ID'] 
                                 st.button("📄 預覽", 
                                           key=f"preview_btn_{item_id}", 
-                                          on_click=create_preview_callback(signed_url, mime_type, item_id),
+                                          on_click=toggle_expander_and_set_preview, 
+                                          args=(signed_url, mime_type, expander_key),
                                           help="點擊預覽圖片或 PDF",
                                           disabled=is_locked)
 
