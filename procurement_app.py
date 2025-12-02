@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__) # 定義 logger
 
 # --- 應用程式設定 ---
-APP_VERSION = "v2.1.6 + Keyless Expander Fix" # 更新版本號
+APP_VERSION = "v2.1.6 + Expander State Fix" # 更新版本號
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
 DATE_FORMAT = "%Y-%m-%d" # 日期格式
 DATETIME_FORMAT = "%Y-%m-%d %H:%M" # 恢復 V2.1.6 時間戳格式
@@ -586,11 +586,11 @@ def handle_master_save():
 
 # 批次刪除的觸發函式
 def trigger_delete_confirmation():
-    """點擊 '刪除已標記項目' 按鈕時，觸發確認流程。(恢復 V2.1.6 邏輯)"""
+    """點擊 '刪除已標記項目' 按鈕時，觸發確認流程。(修復寫入失敗回滾)"""
     
     temp_df = st.session_state.data.copy()
     
-    # V2.1.6 邏輯: 合併 edited_dataframes (ID 是欄位)
+    # 這是從 data_editor 讀取當前編輯狀態的關鍵邏輯
     combined_edited_df = pd.concat(
         [edited_df.set_index('ID')[['標記刪除']] for edited_df in st.session_state.edited_dataframes.values() if not edited_df.empty],
         axis=0, 
@@ -622,13 +622,14 @@ def handle_batch_delete_quotes():
     main_df = st.session_state.data.copy()
     original_data = st.session_state.data.copy() # 儲存原始數據用於回滾
     
-    # V2.1.6 邏輯: 合併 edited_dataframes (ID 是欄位)
+    # 這是從 data_editor 讀取當前編輯狀態的關鍵邏輯
     combined_edited_df = pd.concat(
         [edited_df.set_index('ID')[['標記刪除']] for edited_df in st.session_state.edited_dataframes.values() if not edited_df.empty],
         axis=0, 
         ignore_index=False
     )
     
+    # 這是關鍵的合併步驟，將編輯的 '標記刪除' 狀態應用到主數據框
     if not combined_edited_df.empty:
         main_df = main_df.set_index('ID')
         main_df.update(combined_edited_df)
@@ -640,6 +641,7 @@ def handle_batch_delete_quotes():
     
     if not ids_to_delete:
         st.session_state.show_delete_confirm = False
+        st.warning("沒有項目被標記為刪除。")
         st.rerun()
         return
 
@@ -651,7 +653,8 @@ def handle_batch_delete_quotes():
     if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
         st.session_state.show_delete_confirm = False # 重設確認狀態
         st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。Sheets 已更新。")
-        st.session_state.edited_dataframes = {} # 清除編輯狀態
+        # 清除 edited_dataframes，因為刪除操作已經包含了編輯狀態
+        st.session_state.edited_dataframes = {} 
     else:
         # 寫入失敗，回滾 session state.data
         st.session_state.data = original_data
@@ -1124,7 +1127,10 @@ def run_app():
 
     # *** 專案 Expander 列表 ***
     if project_groups is not None:
-        for proj_name, proj_data in project_groups:
+        project_names = list(project_groups.groups.keys()) # 取得所有專案名稱列表
+        
+        for i, proj_name in enumerate(project_names):
+            proj_data = project_groups.get_group(proj_name) # 透過名稱取得該專案的數據
             meta = st.session_state.project_metadata.get(proj_name, {})
             proj_budget = calculate_project_budget(df, proj_name)
             
@@ -1142,12 +1148,22 @@ def run_app():
             expander_key = f"expander_{proj_name}"
 
             # 修正 1: Expander 狀態管理 - 初始化 Expander 狀態到 Session State
+            # 讓第一個專案預設為展開狀態
             if expander_key not in st.session_state:
-                 st.session_state[expander_key] = False # 預設收合
+                 st.session_state[expander_key] = (i == 0) # 預設第一個展開，其餘收合
 
-            # 修正 1: Expander 狀態管理 - 確保 Expander 讀取 Session State
-            # 移除 key 參數以解決 TypeError，但必須手動處理狀態切換
-            with st.expander(label=f"專案：{proj_name} (點擊展開)", expanded=st.session_state[expander_key]): 
+            # 捕獲 Expander 的原生狀態 (沒有 'key' 參數)
+            is_expanded_now = st.expander(
+                label=f"專案：{proj_name} (點擊展開)", 
+                expanded=st.session_state[expander_key]
+            )
+            
+            # 立即將 Expander 的實際狀態寫回 Session State
+            # 這是防止 data_editor 互動導致 Expander 收合的關鍵步驟
+            st.session_state[expander_key] = is_expanded_now
+
+            # 只有當 Expander 展開時才渲染內容
+            if is_expanded_now:
                 st.markdown(header_html, unsafe_allow_html=True)
                 
                 for item_name, item_data in proj_data.groupby('專案項目'):
