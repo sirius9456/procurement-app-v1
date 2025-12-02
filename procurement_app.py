@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__) # 定義 logger
 
 # --- 應用程式設定 ---
-APP_VERSION = "v2.1.6 + Attachments/UI Fix (v2)" # 更新版本號
+APP_VERSION = "v2.1.6 + Expander/Delete Fix" # 更新版本號
 STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
 DATE_FORMAT = "%Y-%m-%d" # 日期格式
 DATETIME_FORMAT = "%Y-%m-%d %H:%M" # 恢復 V2.1.6 時間戳格式
@@ -1141,32 +1141,10 @@ def run_app():
             
             expander_key = f"expander_{proj_name}"
 
-            # 修正 1: Expander 展開/收合狀態持久化
-            if expander_key not in st.session_state:
-                st.session_state[expander_key] = False # 預設為收合
+            # 修正 1: 移除手動的 st.session_state[expander_key] 邏輯，依賴 Streamlit 內建的 key 狀態管理
             
-            def toggle_expander_state(key):
-                st.session_state[key] = not st.session_state[key]
-
-            # 為了讓 Expander 點擊時能單獨控制狀態，我們使用 on_change 配合一個不可見的按鈕或狀態管理。
-            # Streamlit Expander 的行為很難在 data_editor 內事件觸發時維持，
-            # 最直接的方式是依賴 Streamlit 的內建狀態，但如果崩潰，則需要手動處理。
-            
-            # 這裡我們使用一個技巧：檢查是否在刪除確認中，如果是則保持狀態不變
-            is_expanded = st.session_state.get(expander_key, False)
-            
-            # 在 Streamlit 中，data_editor 的交互會觸發重新運行，這會重新繪製 Expander。
-            # 為了防止第一次互動時 Expander 重新讀取 False 狀態而關閉，
-            # 我們需要確保它的狀態在每次運行時都能被保留。
-            # 由於我們沒有使用 on_change，我們依賴 Streamlit 的 key 機制。
-
-            # 檢查 Expander 的狀態是否因為 data_editor 互動而丟失 (簡單地嘗試保留狀態)
-            # 在 data_editor 內互動會導致整個應用程式重新運行。
-            # 在重新運行中，Expander 嘗試根據 key 恢復其內部狀態。
-            # 這裡我們使用一個簡單的 trick: 讓 Expander 在 data_editor 互動時使用一個固定的狀態，而不是默認的 False
-
-            # 設置 Expander 的 key 和初始狀態
-            with st.expander(label=f"專案：{proj_name} (點擊展開)", expanded=is_expanded, key=expander_key): 
+            # 使用 st.expander，並讓 Streamlit 處理它的狀態持久性
+            with st.expander(label=f"專案：{proj_name} (點擊展開)", expanded=False, key=expander_key): 
                 st.markdown(header_html, unsafe_allow_html=True)
                 
                 for item_name, item_data in proj_data.groupby('專案項目'):
@@ -1189,14 +1167,17 @@ def run_app():
                     editable_df['預覽'] = None
                     
                     # 使用 lambda 函數來確保 set_preview 傳遞正確的參數
-                    def create_preview_callback(url, mime_type):
-                        return lambda: set_preview(url, mime_type)
+                    def create_preview_callback(url, mime_type, item_id):
+                        # 這個內部函數是為了確保在迴圈中，每個按鈕都能引用到正確的 URL/MIME Type
+                        return lambda: set_preview(url, mime_type, item_id)
                     
-                    def set_preview(url, mime_type):
+                    def set_preview(url, mime_type, item_id):
                         # 設置狀態並觸發重新運行以顯示 Modal
                         st.session_state.preview_url = url
                         st.session_state.preview_type = mime_type
-                    
+                        # 設置 Expander 狀態為 True，確保預覽顯示後 Expander 不會收合
+                        st.session_state[f"expander_{proj_name}"] = True 
+
                     # 預處理附件連結
                     for idx_orig in editable_df.index: # 使用原始索引來操作 df
                         gcs_uri = editable_df.loc[idx_orig, '附件URL']
@@ -1212,7 +1193,7 @@ def run_app():
                                 item_id = editable_df.loc[idx_orig, 'ID'] 
                                 st.button("📄 預覽", 
                                           key=f"preview_btn_{item_id}", 
-                                          on_click=create_preview_callback(signed_url, mime_type),
+                                          on_click=create_preview_callback(signed_url, mime_type, item_id),
                                           help="點擊預覽圖片或 PDF",
                                           disabled=is_locked)
 
