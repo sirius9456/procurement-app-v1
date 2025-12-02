@@ -701,7 +701,6 @@ def initialize_session_state():
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
 
-
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
     
@@ -724,14 +723,12 @@ def render_sidebar_ui(df, project_metadata, today):
                 
                 st.markdown("---")
                 
-                current_meta = project_metadata.get(target_proj, {'due_date': today})
-                
                 if operation == "修改專案資訊":
                     st.markdown("##### ✏️ 專案資訊修改")
                     st.text_input("新專案名稱", value=target_proj, key="edit_new_name")
-                    st.date_input("新專案交貨日", value=current_meta['due_date'], key="edit_new_date")
+                    # 已移除「新專案交貨日」輸入，交貨日修改已移至「新增/設定專案時程」區塊
                     
-                    if st.button("確認修改專案", type="primary", use_container_width=True): 
+                    if st.button("確認修改專案名稱", type="primary", use_container_width=True): 
                         handle_project_modification()
                 
                 elif operation == "刪除專案":
@@ -749,6 +746,9 @@ def render_sidebar_ui(df, project_metadata, today):
         # --- 區塊 2: 新增/設定專案時程 ---
         # *--- render_sidebar_ui - 區塊 2: 新增/設定專案時程 ---*
         with st.expander("➕ 新增/設定專案時程", expanded=False): 
+            # 新增提示訊息
+            st.info("💡 若輸入現有專案名稱，將更新該專案的交貨日與緩衝天數。")
+            
             st.text_input("專案名稱 (Project Name)", key="new_proj_name")
             
             project_due_date = st.date_input("專案交貨日 (Project Due Date)", value=today + timedelta(days=30), key="new_proj_due_date")
@@ -1133,6 +1133,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
