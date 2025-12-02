@@ -831,8 +831,6 @@ def render_sidebar_ui(df, project_metadata, today):
 
         # 恢復 V2.1.6 原始登出按鈕位置
         st.button("🚪 登出系統", on_click=logout, type="secondary", key="sidebar_logout_btn")
-
-
 # *--- 6. 模組化渲染函數 - render_sidebar_ui - 結束 ---*
 
 
@@ -963,12 +961,15 @@ def render_project_tables(df, project_metadata):
                 editable_df = item_data.copy()
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                cols_to_display = ['ID', '選取', '供應商', '單價', '數量', '總價', '交期顯示', '狀態', '標記刪除']
+                # 定義要顯示的欄位順序 (移除 'ID')
+                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '交期顯示', '狀態', '標記刪除']
 
+                # 使用 column_order 來控制顯示，但傳入完整的 editable_df 以保留隱藏的 ID 欄位供後端邏輯使用
                 edited_df_value = st.data_editor(
-                    editable_df[cols_to_display],
+                    editable_df,
+                    column_order=cols_to_display,
                     column_config={
-                        "ID": st.column_config.Column("ID", disabled=True, width="tiny"), 
+                        # 移除 ID 的 config
                         "選取": st.column_config.CheckboxColumn("選取", width="tiny"), 
                         "供應商": st.column_config.Column("供應商", disabled=False), 
                         "單價": st.column_config.NumberColumn("單價", format="$%d"),
@@ -998,7 +999,9 @@ def render_project_tables(df, project_metadata):
                       convert_df_to_excel(df), 
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    
     # *--- render_project_tables - 專案表格區塊 - 結束 ---*
+
 
 
 # --- 主應用程式核心邏輯 (在登入成功後調用) ---
@@ -1073,6 +1076,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
