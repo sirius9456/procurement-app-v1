@@ -466,17 +466,27 @@ def trigger_delete_confirmation():
     
     temp_df = st.session_state.data.copy()
     
-    combined_edited_df = pd.concat(
-        [edited_df.set_index('ID')[['標記刪除']] for edited_df in st.session_state.edited_dataframes.values() if not edited_df.empty],
-        axis=0, 
-        ignore_index=False
-    )
+    # *******************************************************************
+    # 修正: 透過字典映射，確保從所有 data_editor 中獲取最新的 '標記刪除' 狀態
+    # *******************************************************************
+    edited_delete_states = {}
+    for edited_df in st.session_state.edited_dataframes.values():
+        if not edited_df.empty:
+            for _, row in edited_df.iterrows():
+                # 使用 ID 作為鍵，確保最新的編輯狀態被記錄
+                edited_delete_states[row['ID']] = row['標記刪除']
     
-    if not combined_edited_df.empty:
-        temp_df = temp_df.set_index('ID')
-        temp_df.update(combined_edited_df)
-        temp_df = temp_df.reset_index()
+    if edited_delete_states:
+        # 將 edited_delete_states 應用到 temp_df 的 '標記刪除' 欄位
+        temp_df['標記刪除'] = temp_df.apply(
+            lambda row: edited_delete_states.get(row['ID'], row['標記刪除']), 
+            axis=1
+        )
+    # *******************************************************************
+    # 結束修正
+    # *******************************************************************
 
+    # 確保 '標記刪除' 是布林值 (以防萬一)
     temp_df['標記刪除'] = temp_df['標記刪除'].astype(bool) 
     
     ids_to_delete = temp_df[temp_df['標記刪除'] == True]['ID'].tolist()
@@ -495,16 +505,23 @@ def handle_batch_delete_quotes():
     
     main_df = st.session_state.data.copy()
     
-    combined_edited_df = pd.concat(
-        [edited_df.set_index('ID')[['標記刪除']] for edited_df in st.session_state.edited_dataframes.values() if not edited_df.empty],
-        axis=0, 
-        ignore_index=False
-    )
+    # *******************************************************************
+    # 修正: 透過字典映射，確保從所有 data_editor 中獲取最新的 '標記刪除' 狀態
+    # *******************************************************************
+    edited_delete_states = {}
+    for edited_df in st.session_state.edited_dataframes.values():
+        if not edited_df.empty:
+            for _, row in edited_df.iterrows():
+                edited_delete_states[row['ID']] = row['標記刪除']
     
-    if not combined_edited_df.empty:
-        main_df = main_df.set_index('ID')
-        main_df.update(combined_edited_df)
-        main_df = main_df.reset_index()
+    if edited_delete_states:
+        main_df['標記刪除'] = main_df.apply(
+            lambda row: edited_delete_states.get(row['ID'], row['標記刪除']), 
+            axis=1
+        )
+    # *******************************************************************
+    # 結束修正
+    # *******************************************************************
 
     main_df['標記刪除'] = main_df['標記刪除'].astype(bool)
     
@@ -1046,3 +1063,4 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
