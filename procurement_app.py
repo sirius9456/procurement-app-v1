@@ -743,7 +743,7 @@ def render_sidebar_ui(df, project_metadata, today):
                 st.info("無專案可修改/刪除。請在下方新增專案。")
         # *--- render_sidebar_ui - 區塊 1: 修改/刪除專案 - 結束 ---*
         
-        st.markdown("---")
+        # 移除分隔線 st.markdown("---")
         
         # --- 區塊 2: 新增/設定專案時程 ---
         # *--- render_sidebar_ui - 區塊 2: 新增/設定專案時程 ---*
@@ -760,7 +760,7 @@ def render_sidebar_ui(df, project_metadata, today):
                 handle_add_new_project()
         # *--- render_sidebar_ui - 區塊 2: 新增/設定專案時程 - 結束 ---*
         
-        st.markdown("---")
+        # 移除分隔線 st.markdown("---")
         
         # --- 區塊 3: 新增報價 ---
         # *--- render_sidebar_ui - 區塊 3: 新增報價 ---*
@@ -796,7 +796,10 @@ def render_sidebar_ui(df, project_metadata, today):
             st.session_state.item_name_to_use_final = item_name_to_use
             
             st.text_input("供應商名稱", key="quote_supplier")
-            st.number_input("單價 (TWD)", min_value=0.0, key="quote_price") 
+            
+            # 修正: 單價改為整數輸入 (min_value=0, step=1)
+            st.number_input("單價 (TWD)", min_value=0, step=1, key="quote_price") 
+            
             st.number_input("數量", min_value=1, value=1, key="quote_qty")
             
             st.markdown("##### 預計交貨日輸入")
@@ -828,6 +831,8 @@ def render_sidebar_ui(df, project_metadata, today):
 
         # 恢復 V2.1.6 原始登出按鈕位置
         st.button("🚪 登出系統", on_click=logout, type="secondary", key="sidebar_logout_btn")
+
+
 # *--- 6. 模組化渲染函數 - render_sidebar_ui - 結束 ---*
 
 
@@ -1068,6 +1073,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
