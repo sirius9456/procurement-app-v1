@@ -700,7 +700,6 @@ def initialize_session_state():
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
 
-
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
     
@@ -962,10 +961,15 @@ def render_project_tables(df, project_metadata):
                 """, unsafe_allow_html=True)
 
                 editable_df = item_data.copy()
+                
+                # 【重要修正】強制將日期欄位轉換為 datetime 物件，確保 DateColumn 生效
+                # 即使緩存中的數據是字串，這裡也會被修正
+                if '預計交貨日' in editable_df.columns:
+                    editable_df['預計交貨日'] = pd.to_datetime(editable_df['預計交貨日'], errors='coerce')
+
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
                 # 定義要顯示的欄位順序 (移除 'ID')
-                # 【修正】將 '交期顯示' 替換為 '預計交貨日' 作為可編輯欄位
                 cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期顯示', '狀態', '標記刪除']
 
                 # 使用 column_order 來控制顯示，但傳入完整的 editable_df 以保留隱藏的 ID 欄位供後端邏輯使用
@@ -979,10 +983,9 @@ def render_project_tables(df, project_metadata):
                         "數量": st.column_config.NumberColumn("數量"),
                         "總價": st.column_config.NumberColumn("總價", format="$%d", disabled=True),
                         
-                        # 【修正】設定為 DateColumn 實現日曆編輯
-                        "預計交貨日": st.column_config.DateColumn("預計交貨日", format=DATE_FORMAT, help="點擊月曆圖示修改交期"), 
+                        # 【修正】設定為 DateColumn 實現日曆編輯，並使用標準格式字串
+                        "預計交貨日": st.column_config.DateColumn("預計交貨日", format="YYYY-MM-DD", help="點擊月曆圖示修改交期"), 
                         
-                        # 【修正】交期顯示 (紅綠燈) 改為只讀
                         "交期顯示": st.column_config.TextColumn("期限判定", disabled=True, width="medium", help="紅燈代表交期晚於最慢到貨日"), 
                         
                         "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
@@ -1252,6 +1255,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
