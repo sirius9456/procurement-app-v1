@@ -463,27 +463,21 @@ def handle_master_save():
 
 def get_current_delete_ids():
     """輔助函式：從所有編輯器中匯總當前被標記刪除的 ID 列表。"""
-    # 建立 ID -> Delete_Status 的對照表
-    # 這會掃描所有專案/項目的編輯器狀態
     delete_map = {}
     
     # 遍歷所有編輯器暫存檔
     for edited_df in st.session_state.edited_dataframes.values():
         if edited_df is not None and not edited_df.empty:
             for _, row in edited_df.iterrows():
-                # 記錄最新的刪除標記狀態
                 delete_map[row['ID']] = row['標記刪除']
     
     ids_to_delete = []
     
     # 比對原始數據與編輯狀態
-    # 邏輯：如果在編輯器中有狀態，以編輯器為準；否則以原始數據為準
     for _, row in st.session_state.data.iterrows():
         item_id = row['ID']
-        # 優先使用編輯後的狀態，若無則使用原始狀態
         is_marked = delete_map.get(item_id, row['標記刪除'])
         
-        # 確保是布林值 True
         if is_marked is True or str(is_marked).lower() == 'true':
             ids_to_delete.append(item_id)
             
@@ -491,46 +485,61 @@ def get_current_delete_ids():
 
 
 def trigger_delete_confirmation():
-    """點擊 '刪除已標記項目' 按鈕時，觸發確認流程。"""
+    """
+    第一步：鎖定目標。
+    點擊 '刪除已標記項目' 按鈕時，立刻計算並鎖定要刪除的 ID，存入 Session State。
+    """
     
-    # 直接計算需要刪除的 ID，不依賴先前的儲存動作
+    # 1. 獲取當前勾選的 ID
     ids_to_delete = get_current_delete_ids()
     
     if not ids_to_delete:
         st.warning("沒有項目被標記為刪除。請先在表格中勾選 '刪除?' 欄位。")
         st.session_state.show_delete_confirm = False
+        # 清除可能存在的舊暫存
+        if 'pending_delete_ids' in st.session_state:
+            del st.session_state.pending_delete_ids
         return
 
+    # 2. 將 ID 列表「鎖定」存入 session_state，供下一步使用
+    st.session_state.pending_delete_ids = ids_to_delete
     st.session_state.delete_count = len(ids_to_delete)
     st.session_state.show_delete_confirm = True
     st.rerun()
 
 
 def handle_batch_delete_quotes():
-    """執行批次刪除操作。"""
+    """
+    第二步：執行刪除。
+    直接讀取第一步鎖定的 ID 列表進行刪除，確保操作一致性。
+    """
     
-    # 再次確認要刪除的 ID (確保狀態一致)
-    ids_to_delete = get_current_delete_ids()
+    # 1. 從 Session State 讀取「鎖定」的 ID 列表
+    # 使用 .get() 避免報錯，若沒有則為空列表
+    ids_to_delete = st.session_state.get('pending_delete_ids', [])
     
     if not ids_to_delete:
         st.session_state.show_delete_confirm = False
-        st.warning("沒有找到需要刪除的項目。")
+        st.warning("刪除操作過期或未找到目標，請重新勾選並執行。")
         st.rerun()
         return
 
-    # 執行刪除：保留 ID 不在刪除列表中的項目
+    # 2. 執行刪除：保留 ID 不在刪除列表中的項目
     main_df = st.session_state.data
     df_after_delete = main_df[~main_df['ID'].isin(ids_to_delete)].reset_index(drop=True)
     
-    # 更新 Session State
+    # 3. 更新 Session State
     st.session_state.data = df_after_delete
     
-    # 寫入 Google Sheets
+    # 4. 寫入 Google Sheets
     if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
         st.session_state.show_delete_confirm = False
         st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。Sheets 已更新。")
-        # 清除編輯暫存，避免 ID 衝突
+        
+        # 清除編輯暫存與鎖定的 ID
         st.session_state.edited_dataframes = {} 
+        if 'pending_delete_ids' in st.session_state:
+            del st.session_state.pending_delete_ids
     
     st.rerun()
 
@@ -1059,5 +1068,6 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
