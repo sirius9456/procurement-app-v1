@@ -152,6 +152,10 @@ def login_form():
 
 
 
+# 【設定】測試版專用的工作表名稱，請務必在 Google Sheets 中建立這兩個分頁
+TEST_DATA_SHEET_NAME = '採購總表_測試' 
+TEST_METADATA_SHEET_NAME = '專案設定_測試'
+
 @st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
 def load_data_from_sheets():
     """直接使用 gspread 讀取 Google Sheets 中的數據。"""
@@ -174,18 +178,23 @@ def load_data_from_sheets():
         sh = gc.open_by_url(SHEET_URL)
         
         # --- 2. 讀取採購總表 (Data) ---
-        data_ws = sh.worksheet(DATA_SHEET_NAME)
+        # 【關鍵修改】嘗試讀取測試專用分頁
+        try:
+            data_ws = sh.worksheet(TEST_DATA_SHEET_NAME)
+        except gspread.exceptions.WorksheetNotFound:
+            st.error(f"❌ 找不到工作表：**{TEST_DATA_SHEET_NAME}**")
+            st.warning(f"請到 Google Sheets 建立一個名為「**{TEST_DATA_SHEET_NAME}**」的分頁，以隔離測試數據。")
+            return pd.DataFrame(columns=expected_cols), {}
+            
         data_records = data_ws.get_all_records()
         data_df = pd.DataFrame(data_records)
 
-        # 【關鍵修正】如果讀取到的 DataFrame 是空的，或缺少欄位，強制補齊
+        # 強制補齊欄位
         if data_df.empty:
             data_df = pd.DataFrame(columns=expected_cols)
         else:
-            # 確保所有標準欄位都存在
             for col in expected_cols:
                 if col not in data_df.columns:
-                    # 依據欄位類型給予預設值
                     if col in ['選取', '標記刪除']:
                         data_df[col] = False
                     elif col in ['ID', '數量']:
@@ -195,29 +204,29 @@ def load_data_from_sheets():
                     else:
                         data_df[col] = ''
 
-        # 數據類型轉換與處理 (使用更穩健的方式處理 astype)
+        # 數據類型轉換與處理
         dtype_map = {
-            'ID': 'Int64', 
-            '選取': 'bool', 
-            '單價': 'float', 
-            '數量': 'Int64', 
-            '總價': 'float',
-            '標記刪除': 'bool'
+            'ID': 'Int64', '選取': 'bool', '單價': 'float', '數量': 'Int64', 
+            '總價': 'float', '標記刪除': 'bool'
         }
-        
         valid_dtype_map = {col: dtype for col, dtype in dtype_map.items() if col in data_df.columns}
-
         if valid_dtype_map:
             data_df = data_df.astype(valid_dtype_map, errors='ignore')
 
-        # 【修正】將日期欄位轉換為 datetime 類型，以支援 DateColumn
         if '預計交貨日' in data_df.columns:
             data_df['預計交貨日'] = pd.to_datetime(data_df['預計交貨日'], errors='coerce', format=DATE_FORMAT) 
         if '採購最慢到貨日' in data_df.columns:
             data_df['採購最慢到貨日'] = pd.to_datetime(data_df['採購最慢到貨日'], errors='coerce', format=DATE_FORMAT) 
         
         # --- 3. 讀取專案設定 (Metadata) ---
-        metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
+        # 【關鍵修改】讀取測試專用專案設定
+        try:
+            metadata_ws = sh.worksheet(TEST_METADATA_SHEET_NAME)
+        except gspread.exceptions.WorksheetNotFound:
+            st.error(f"❌ 找不到工作表：**{TEST_METADATA_SHEET_NAME}**")
+            st.warning(f"請到 Google Sheets 建立一個名為「**{TEST_METADATA_SHEET_NAME}**」的分頁。")
+            return data_df, {}
+
         metadata_records = metadata_ws.get_all_records()
         
         project_metadata = {}
@@ -234,23 +243,20 @@ def load_data_from_sheets():
                     'last_modified': str(row.get('最後修改', ''))
                 }
 
-        st.success("✅ 數據已從 Google Sheets 載入！")
+        st.success(f"✅ 測試數據已從 `{TEST_DATA_SHEET_NAME}` 及 `{TEST_METADATA_SHEET_NAME}` 載入！")
         return data_df, project_metadata
 
     except Exception as e:
         logging.exception("Google Sheets 數據載入時發生致命錯誤！") 
-        
-        st.error(f"❌ 數據載入失敗！請檢查 Sheets 分享權限、工作表名稱或憑證檔案。")
+        st.error(f"❌ 數據載入失敗！")
         st.code(f"錯誤訊息: {e}")
-        
-        # 發生錯誤時回傳完整的空 DataFrame
-        empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '標記刪除'])
+        empty_data = pd.DataFrame(columns=expected_cols)
         st.session_state.data_load_failed = True
         return empty_data, {}
 
 
 def write_data_to_sheets(df_to_write, metadata_to_write):
-    """直接使用 gspread 寫回 Google Sheets。"""
+    """直接使用 gspread 寫回 Google Sheets (測試版專用)。"""
     if st.session_state.get('data_load_failed', False) or not SHEET_URL:
         st.warning("數據載入失敗或 URL 未配置，已禁用寫入 Sheets。")
         return False
@@ -261,27 +267,24 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         sh = gc.open_by_url(SHEET_URL)
         
         # --- 2. 寫入採購總表 (Data) ---
-        # 移除僅供顯示用的欄位，避免寫入錯誤
         cols_to_drop = ['交期判定', '交期顯示']
         df_export = df_to_write.drop(columns=[c for c in cols_to_drop if c in df_to_write.columns], errors='ignore')
 
-        # 【關鍵修正】確保日期格式正確轉為字串 (YYYY-MM-DD)，否則 JSON 序列化會失敗導致無法寫入
         for col in ['預計交貨日', '採購最慢到貨日']:
             if col in df_export.columns:
-                # 先轉為 datetime 確保一致性，再轉字串，處理 NaT/NaN 為空字串
                 df_export[col] = pd.to_datetime(df_export[col], errors='coerce').dt.strftime(DATE_FORMAT).fillna("")
                 
-        # 處理布林值與空值，避免 JSON 錯誤
         df_export = df_export.fillna("")
-        
-        # 確保所有數值型別轉換為 Python 原生型別 (int, float)，避免 numpy 型別導致錯誤
-        # 這是一個常見的 gspread 寫入錯誤原因
         df_export = df_export.astype(object) 
                 
-        data_ws = sh.worksheet(DATA_SHEET_NAME)
+        # 【關鍵修改】寫入測試專用分頁
+        try:
+            data_ws = sh.worksheet(TEST_DATA_SHEET_NAME)
+        except gspread.exceptions.WorksheetNotFound:
+            st.error(f"❌ 找不到工作表：{TEST_DATA_SHEET_NAME}，無法寫入。")
+            return False
+
         data_ws.clear()
-        
-        # 將 DataFrame 轉為列表列表 (List of Lists)
         data_to_update = [df_export.columns.values.tolist()] + df_export.values.tolist()
         data_ws.update(data_to_update)
         
@@ -294,19 +297,27 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
             for name, data in metadata_to_write.items()
         ]
         metadata_df = pd.DataFrame(metadata_list)
-        metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
+        
+        # 【關鍵修改】寫入測試專用專案設定
+        try:
+            metadata_ws = sh.worksheet(TEST_METADATA_SHEET_NAME)
+        except gspread.exceptions.WorksheetNotFound:
+            st.error(f"❌ 找不到工作表：{TEST_METADATA_SHEET_NAME}，無法寫入設定。")
+            return False
+
         metadata_ws.clear()
         if not metadata_df.empty:
             metadata_ws.update([metadata_df.columns.values.tolist()] + metadata_df.values.tolist())
             
-        st.cache_data.clear() # 清除讀取快取，確保下次讀到最新
+        st.cache_data.clear()
         return True
         
     except Exception as e:
         logging.exception("Google Sheets 數據寫入時發生致命錯誤！")
-        st.error(f"❌ 數據寫回 Google Sheets 失敗！請截圖此錯誤訊息。")
+        st.error(f"❌ 數據寫回 Google Sheets 失敗！")
         st.code(f"寫入錯誤訊息: {e}")
         return False
+
 
 
 # *--- 2. 數據讀取與寫入函式 - 結束 ---*
@@ -1204,6 +1215,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
