@@ -1038,6 +1038,7 @@ def initialize_session_state():
 # *--- 5. Session State 初始化函式 - 結束 ---*
 
 
+
 # ******************************
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
@@ -1259,15 +1260,18 @@ def render_project_tables(df, project_metadata):
 
     # 【新增功能：處理點擊事件】
     # 檢查是否有來自表格的點擊，如果有，更新 Session State
-    query_params = st.experimental_get_query_params()
+    # st.experimental_get_query_params 已棄用，改用 st.query_params
+    query_params = st.query_params
     if 'preview_id' in query_params:
         try:
-            clicked_id = int(query_params['preview_id'][0])
+            # query_params['preview_id'] 現在直接是字串值，不再是列表
+            clicked_id = int(query_params['preview_id']) 
             st.session_state.preview_from_table_id = clicked_id
         except:
             pass
         # 清除 URL 參數，避免重整時重複觸發
-        st.experimental_set_query_params(preview_id=None)
+        # st.experimental_set_query_params 已棄用，改用 st.query_params['key'] = None
+        st.query_params['preview_id'] = None 
 
 
     for i, proj_name in enumerate(project_names):
@@ -1336,7 +1340,7 @@ def render_project_tables(df, project_metadata):
                     if file_name:
                         # 創建一個連結到當前頁面，但帶有 query parameter 的連結
                         # 點擊後會觸發 run_app 頂部的邏輯，設置 session state 進行預覽
-                        return f"[📎 {file_name}](?preview_id={quote_id})" 
+                        return f"[📎 {os.path.basename(file_name)}](?preview_id={quote_id})" 
                     return ""
                 
                 editable_df['附件_display'] = editable_df.apply(create_link_markdown, axis=1)
@@ -1396,6 +1400,7 @@ def render_project_tables(df, project_metadata):
                       convert_df_to_excel(df), 
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
 
 # *--- 6. 模組化渲染函數 - 結束 ---*
 
@@ -1491,6 +1496,7 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
 
 
