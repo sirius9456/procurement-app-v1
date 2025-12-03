@@ -17,25 +17,36 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # 版本號
-APP_VERSION = "V2.2.2 (UI Fix)"
+APP_VERSION = "V2.2.3 (Auth Fix)"
 
 # 時間格式
 DATE_FORMAT = "%Y-%m-%d"
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-# Google Sheets 設定 (正式環境)
-# 嘗試從 Streamlit secrets 讀取，若無則使用預設
-try:
-    SHEET_URL = st.secrets["spreadsheet"]["url"]
-except:
-    SHEET_URL = "https://docs.google.com/spreadsheets/d/16vSMLx-GYcIpV2cuyGIeZctvA2sI8zcqh9NKKyrs-uY/edit?usp=sharing" # 請確保此處為您的實際 URL
+# --- Google Sheets URL 設定 ---
+# 優先順序：1. 環境變數 (GCE) -> 2. Streamlit Secrets -> 3. 預設/硬編碼
+if "GCE_SHEET_URL" in os.environ:
+    SHEET_URL = os.environ["GCE_SHEET_URL"]
+else:
+    try:
+        SHEET_URL = st.secrets["spreadsheet"]["url"]
+    except:
+        SHEET_URL = "https://docs.google.com/spreadsheets/d/1g1Lg1k1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1/edit" # 請確保此處為您的實際 URL
 
 # 工作表名稱
 DATA_SHEET_NAME = '採購總表'
 METADATA_SHEET_NAME = '專案設定'
 
-# 憑證路徑
-GSHEETS_CREDENTIALS = "secrets/google_sheets_credentials.json"
+# --- 憑證路徑設定 (智慧偵測) ---
+# 優先順序：1. 環境變數 -> 2. secrets 資料夾 -> 3. 根目錄 -> 4. 預設
+if "GSHEETS_CREDENTIALS_PATH" in os.environ:
+    GSHEETS_CREDENTIALS = os.environ["GSHEETS_CREDENTIALS_PATH"]
+elif os.path.exists("secrets/google_sheets_credentials.json"):
+    GSHEETS_CREDENTIALS = "secrets/google_sheets_credentials.json"
+elif os.path.exists("google_sheets_credentials.json"):
+    GSHEETS_CREDENTIALS = "google_sheets_credentials.json"
+else:
+    GSHEETS_CREDENTIALS = "secrets/google_sheets_credentials.json" # 預設值
 
 st.set_page_config(
     page_title=f"專案採購小幫手 {APP_VERSION}", 
@@ -183,8 +194,10 @@ def load_data_from_sheets():
 
     try:
         # --- 1. 授權與認證 ---
+        # 檢查憑證是否存在 (使用全域變數 GSHEETS_CREDENTIALS，它已經經過智慧偵測)
         if not GSHEETS_CREDENTIALS or not os.path.exists(GSHEETS_CREDENTIALS):
-             st.error(f"❌ 憑證錯誤：找不到憑證檔案 {GSHEETS_CREDENTIALS}")
+             st.error(f"❌ 憑證錯誤：找不到憑證檔案。路徑: {GSHEETS_CREDENTIALS}")
+             st.info("💡 提示：請確認 'google_sheets_credentials.json' 是否在根目錄、secrets 資料夾，或已設定環境變數。")
              raise FileNotFoundError("憑證檔案不存在或路徑錯誤")
             
         gc = gspread.service_account(filename=GSHEETS_CREDENTIALS)
@@ -1192,4 +1205,3 @@ def main():
         
 if __name__ == "__main__":
     main()
-
