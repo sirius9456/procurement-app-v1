@@ -547,12 +547,42 @@ def delete_file_from_gcs(gcs_object_name):
 # *--- 3. 輔助函式區 - 結束 ---*
 
 
+
+
 # ******************************
 # *--- 9. 附件管理模組 (新功能) ---*
 # ******************************
 
-
 import base64
+from google.cloud import storage # 新增 GCS Storage 函式庫
+from google.oauth2 import service_account # 新增 Service Account 載入工具
+
+
+@st.cache_resource
+def get_gcs_signing_client():
+    """
+    獲取 GCS Client，專門用於簽署網址 (需要私鑰)。
+    這會使用 st.secrets 中設定的私鑰憑證，以覆蓋 GCE/Cloud Run 的 token 憑證。
+    """
+    try:
+        # 假設 GCS Service Account JSON 資訊儲存在 st.secrets['gcs_sa']
+        # 憑證格式必須與從 GCP 下載的 JSON 內容一致
+        sa_info = st.secrets["gcs_sa"]
+        
+        # 使用 service_account.Credentials.from_service_account_info 載入私鑰憑證
+        credentials = service_account.Credentials.from_service_account_info(sa_info)
+        
+        # 創建並返回 GCS Client
+        return storage.Client(credentials=credentials)
+        
+    except KeyError:
+        st.error("GCS 憑證錯誤：請確保您的 secrets.toml 中已設定 [gcs_sa] 區塊，包含私鑰資訊。")
+        st.caption("範例：\n[gcs_sa]\n type = \"service_account\"\n project_id = \"your-project-id\"\n private_key_id = \"...\"\n private_key = \"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n\"\n client_email = \"...\"\n client_id = \"...\"\n auth_uri = \"...\"\n token_uri = \"...\"\n auth_provider_x509_cert_url = \"...\"\n client_x509_cert_url = \"...\"")
+        raise
+    except Exception as e:
+        st.error(f"GCS Client 載入失敗：{e}")
+        raise
+
 
 def save_uploaded_file(uploaded_file, quote_id):
     """【GCS 實作】將上傳的檔案存到 Google Cloud Storage，並回傳 GCS 物件名稱。"""
@@ -560,6 +590,7 @@ def save_uploaded_file(uploaded_file, quote_id):
         return None
         
     # 舊的本地檔案儲存邏輯已移除，直接呼叫 GCS 輔助函式
+    # 這裡的 upload_file_to_gcs 函數需要使用具備寫入權限的 GCS Client，可以繼續沿用原有的 get_gcs_client() 或直接使用 get_gcs_signing_client()
     gcs_object_name = upload_file_to_gcs(uploaded_file, quote_id)
     
     # 返回 GCS 物件名稱 (e.g., attachments/123_quote.pdf)
@@ -670,9 +701,9 @@ def render_attachment_module(df):
             if gcs_object_name:
                 
                 # 【安全存取：生成預先簽章網址 (Signed URL)】
-                # 這要求應用程式 (Streamlit) 必須使用具備 'storage.objects.get' 權限的服務帳戶運行。
                 try:
-                    client = get_gcs_client()
+                    # *** 替換 Client 呼叫：使用具備私鑰的 Client ***
+                    client = get_gcs_signing_client() 
                     bucket = client.bucket(GCS_BUCKET_NAME)
                     blob = bucket.blob(gcs_object_name)
                     
@@ -705,8 +736,10 @@ def render_attachment_module(df):
                         st.markdown(f"[點擊下載檔案: {display_filename}]({public_url})", unsafe_allow_html=True)
                         
                 except Exception as e:
-                    st.error(f"❌ 無法生成預先簽章網址，預覽失敗！錯誤：{e}")
-                    st.caption("請確認應用程式使用的服務帳戶是否有權限讀取 GCS 上的檔案 (`storage.objects.get`)。")
+                    # 如果是因為 KeyError (secrets 未設定) 則已在 get_gcs_signing_client 內處理
+                    if not "GCS 憑證錯誤" in str(e):
+                        st.error(f"❌ 無法生成預先簽章網址，預覽失敗！錯誤：{e}")
+                        st.caption("請確認應用程式使用的服務帳戶是否有權限讀取 GCS 上的檔案 (`storage.objects.get`)，**且 secrets.toml 已正確配置**。")
             else:
                 st.caption("請選擇項目並上傳附件以進行預覽。")
 
@@ -1520,6 +1553,7 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
 
 
