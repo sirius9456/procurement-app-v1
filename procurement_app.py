@@ -1206,22 +1206,6 @@ def run_app():
     # 【新增】呼叫附件管理模組
     render_attachment_module(df)
 
-# ******************************
-# *--- 8. 程式入口點 ---*
-# ******************************
-
-def main():
-    
-    st.markdown(CUSTOM_CSS, unsafe_allow_html=True) 
-        
-    login_form()
-    
-    if st.session_state.authenticated:
-        run_app() 
-        
-if __name__ == "__main__":
-    main()
-
 
 # ******************************
 # *--- 9. 附件管理模組 (新功能) ---*
@@ -1364,3 +1348,24 @@ def render_attachment_module(df):
                 st.caption("請選擇項目並上傳附件以進行預覽。")
 
 # *--- 9. 附件管理模組 - 結束 ---*
+
+
+
+
+# ******************************
+# *--- 8. 程式入口點 ---*
+# ******************************
+
+def main():
+    
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True) 
+        
+    login_form()
+    
+    if st.session_state.authenticated:
+        run_app() 
+        
+if __name__ == "__main__":
+    main()
+
+
