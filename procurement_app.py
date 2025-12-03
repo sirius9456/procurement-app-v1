@@ -443,151 +443,6 @@ def delete_file_from_gcs(gcs_object_name):
 
 
 
-# ******************************
-# *--- 9. 附件管理模組 (新功能) ---*
-# ******************************
-# 【修正點】將此區塊移到區塊 4 之前，確保主程式呼叫時函式已定義
-import base64
-
-def save_uploaded_file(uploaded_file, quote_id):
-    """【GCS 實作】將上傳的檔案存到 Google Cloud Storage，並回傳 GCS 物件名稱。"""
-    if uploaded_file is None:
-        return None
-        
-    # 舊的本地檔案儲存邏輯已移除，直接呼叫 GCS 輔助函式
-    gcs_object_name = upload_file_to_gcs(uploaded_file, quote_id)
-    
-    # 返回 GCS 物件名稱 (e.g., attachments/123_quote.pdf)
-    return gcs_object_name 
-
-def render_attachment_module(df):
-    """
-    渲染獨立的附件管理區塊。
-    功能：選擇報價 -> 上傳/檢視附件 (支援圖片與 PDF 預覽)
-    """
-    st.markdown("---")
-    st.subheader("📎 報價附件管理中心")
-    
-    # 1. 處理來自表格點擊的預覽請求
-    auto_preview_id = st.session_state.get('preview_from_table_id', None)
-    initial_proj = "請選擇..."
-    initial_item_key = "請選擇..."
-    
-    if auto_preview_id is not None:
-        try:
-            row = df[df['ID'] == auto_preview_id].iloc[0]
-            initial_proj = row['專案名稱']
-            initial_item_key = f"{row['ID']} - {row['專案項目']} ({row['供應商']})"
-            # 清除狀態，確保下次重新運行時不會自動選擇，除非再次點擊表格
-            st.session_state.preview_from_table_id = None 
-        except:
-            pass
-            
-    # 2. 選擇器
-    col_sel1, col_sel2 = st.columns([1, 2])
-    
-    selected_quote_id = None
-    selected_quote_row = None
-    
-    # 篩選專案並預設選擇
-    all_projects = df['專案名稱'].unique().tolist()
-    initial_proj_list = ["請選擇..."] + all_projects
-    initial_proj_index = initial_proj_list.index(initial_proj) if initial_proj in initial_proj_list else 0
-    
-    with col_sel1:
-        selected_proj = st.selectbox("📂 選擇專案", initial_proj_list, index=initial_proj_index, key="att_proj_select")
-        
-    with col_sel2:
-        if selected_proj != "請選擇...":
-            # 篩選該專案下的報價項目
-            proj_df = df[df['專案名稱'] == selected_proj]
-            # 建立選單標籤: ID - 項目 - 供應商
-            quote_options = {f"{row['ID']} - {row['專案項目']} ({row['供應商']})": row['ID'] for _, row in proj_df.iterrows()}
-            
-            # 篩選報價項目並預設選擇
-            initial_item_list = ["請選擇..."] + list(quote_options.keys())
-            initial_item_index = initial_item_list.index(initial_item_key) if initial_item_key in initial_item_list else 0
-            
-            selected_option = st.selectbox("📄 選擇報價項目", initial_item_list, index=initial_item_index, key="att_item_select")
-            
-            if selected_option != "請選擇...":
-                selected_quote_id = quote_options[selected_option]
-                # 取得該列資料
-                selected_quote_row = df[df['ID'] == selected_quote_id].iloc[0]
-
-    # 3. 附件操作區
-    if selected_quote_id is not None and selected_quote_row is not None:
-        
-        col_upload, col_preview = st.columns([1, 1.5], gap="large")
-        
-        # 獲取 GCS 物件名稱
-        gcs_object_name = str(selected_quote_row.get('附件', '')).strip()
-        
-        with col_upload:
-            st.info(f"正在編輯 ID: **{selected_quote_id}** 的附件")
-            
-            # 顯示目前附件狀態
-            if gcs_object_name:
-                # 只顯示檔名部分
-                display_filename = os.path.basename(gcs_object_name)
-                st.success(f"✅ 目前 GCS 附件：`{display_filename}`")
-                st.caption(f"GCS 路徑: {gcs_object_name}")
-            else:
-                st.warning("目前無附件")
-                
-            # 上傳元件
-            uploaded_file = st.file_uploader("上傳新附件 (支援 JPG, PNG, PDF)", type=['png', 'jpg', 'jpeg', 'pdf'], key=f"uploader_{selected_quote_id}")
-            
-            if uploaded_file:
-                if st.button("💾 確認上傳並儲存", type="primary"):
-                    # 1. 執行上傳到 GCS
-                    new_gcs_object_name = save_uploaded_file(uploaded_file, selected_quote_id)
-                    
-                    if new_gcs_object_name:
-                        # 2. 更新 DataFrame (儲存 GCS 物件名稱)
-                        idx = st.session_state.data[st.session_state.data['ID'] == selected_quote_id].index[0]
-                        st.session_state.data.loc[idx, '附件'] = new_gcs_object_name
-                        st.session_state.data.loc[idx, '最後修改時間'] = datetime.now().strftime(DATETIME_FORMAT)
-                        
-                        # 3. 寫入 Google Sheets
-                        if 'write_data_to_sheets' in globals() and write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-                            st.toast(f"附件 {os.path.basename(new_gcs_object_name)} 上傳成功！")
-                            time.sleep(1) 
-                            st.rerun()
-                        else:
-                            st.error("❌ 寫入 Google Sheets 失敗，請檢查權限與連線。")
-                    else:
-                        st.error("❌ 檔案上傳 GCS 失敗。")
-
-
-        with col_preview:
-            st.markdown("#### 👁️ 附件預覽")
-            if gcs_object_name:
-                # 【GCS 預覽】使用 GCS 的公開存取 URL
-                # 注意：這要求您的 Bucket 必須設置為公開讀取權限
-                public_url = f"{GCS_BASE_URL}/{gcs_object_name}"
-                display_filename = os.path.basename(gcs_object_name)
-                
-                # 判斷副檔名
-                ext = os.path.splitext(display_filename)[1].lower()
-                
-                if ext in ['.png', '.jpg', '.jpeg']:
-                    st.image(public_url, caption=display_filename, use_container_width=True)
-                    
-                elif ext == '.pdf':
-                    # PDF 預覽，直接嵌入公開 URL
-                    pdf_display = f'<iframe src="{public_url}" width="100%" height="600" type="application/pdf"></iframe>'
-                    st.markdown(pdf_display, unsafe_allow_html=True)
-                else:
-                    st.info(f"此檔案格式 ({ext}) 不支援頁面內預覽 (僅支援圖片/PDF)。")
-                    st.markdown(f"[點擊下載檔案: {display_filename}]({public_url})", unsafe_allow_html=True)
-            else:
-                st.caption("請選擇項目並上傳附件以進行預覽。")
-
-
-
-# *--- 9. 附件管理模組 - 結束 ---*
-
 
 # ******************************
 # *--- 4. 邏輯處理函式 ---*
@@ -1373,6 +1228,154 @@ def run_app():
     
     # 【新增】呼叫附件管理模組 
     render_attachment_module(df)
+
+
+# ******************************
+# *--- 9. 附件管理模組 (新功能) ---*
+# ******************************
+# 【修正點】將此區塊移到區塊 4 之前，確保主程式呼叫時函式已定義
+import base64
+
+def save_uploaded_file(uploaded_file, quote_id):
+    """【GCS 實作】將上傳的檔案存到 Google Cloud Storage，並回傳 GCS 物件名稱。"""
+    if uploaded_file is None:
+        return None
+        
+    # 舊的本地檔案儲存邏輯已移除，直接呼叫 GCS 輔助函式
+    gcs_object_name = upload_file_to_gcs(uploaded_file, quote_id)
+    
+    # 返回 GCS 物件名稱 (e.g., attachments/123_quote.pdf)
+    return gcs_object_name 
+
+def render_attachment_module(df):
+    """
+    渲染獨立的附件管理區塊。
+    功能：選擇報價 -> 上傳/檢視附件 (支援圖片與 PDF 預覽)
+    """
+    st.markdown("---")
+    st.subheader("📎 報價附件管理中心")
+    
+    # 1. 處理來自表格點擊的預覽請求
+    auto_preview_id = st.session_state.get('preview_from_table_id', None)
+    initial_proj = "請選擇..."
+    initial_item_key = "請選擇..."
+    
+    if auto_preview_id is not None:
+        try:
+            row = df[df['ID'] == auto_preview_id].iloc[0]
+            initial_proj = row['專案名稱']
+            initial_item_key = f"{row['ID']} - {row['專案項目']} ({row['供應商']})"
+            # 清除狀態，確保下次重新運行時不會自動選擇，除非再次點擊表格
+            st.session_state.preview_from_table_id = None 
+        except:
+            pass
+            
+    # 2. 選擇器
+    col_sel1, col_sel2 = st.columns([1, 2])
+    
+    selected_quote_id = None
+    selected_quote_row = None
+    
+    # 篩選專案並預設選擇
+    all_projects = df['專案名稱'].unique().tolist()
+    initial_proj_list = ["請選擇..."] + all_projects
+    initial_proj_index = initial_proj_list.index(initial_proj) if initial_proj in initial_proj_list else 0
+    
+    with col_sel1:
+        selected_proj = st.selectbox("📂 選擇專案", initial_proj_list, index=initial_proj_index, key="att_proj_select")
+        
+    with col_sel2:
+        if selected_proj != "請選擇...":
+            # 篩選該專案下的報價項目
+            proj_df = df[df['專案名稱'] == selected_proj]
+            # 建立選單標籤: ID - 項目 - 供應商
+            quote_options = {f"{row['ID']} - {row['專案項目']} ({row['供應商']})": row['ID'] for _, row in proj_df.iterrows()}
+            
+            # 篩選報價項目並預設選擇
+            initial_item_list = ["請選擇..."] + list(quote_options.keys())
+            initial_item_index = initial_item_list.index(initial_item_key) if initial_item_key in initial_item_list else 0
+            
+            selected_option = st.selectbox("📄 選擇報價項目", initial_item_list, index=initial_item_index, key="att_item_select")
+            
+            if selected_option != "請選擇...":
+                selected_quote_id = quote_options[selected_option]
+                # 取得該列資料
+                selected_quote_row = df[df['ID'] == selected_quote_id].iloc[0]
+
+    # 3. 附件操作區
+    if selected_quote_id is not None and selected_quote_row is not None:
+        
+        col_upload, col_preview = st.columns([1, 1.5], gap="large")
+        
+        # 獲取 GCS 物件名稱
+        gcs_object_name = str(selected_quote_row.get('附件', '')).strip()
+        
+        with col_upload:
+            st.info(f"正在編輯 ID: **{selected_quote_id}** 的附件")
+            
+            # 顯示目前附件狀態
+            if gcs_object_name:
+                # 只顯示檔名部分
+                display_filename = os.path.basename(gcs_object_name)
+                st.success(f"✅ 目前 GCS 附件：`{display_filename}`")
+                st.caption(f"GCS 路徑: {gcs_object_name}")
+            else:
+                st.warning("目前無附件")
+                
+            # 上傳元件
+            uploaded_file = st.file_uploader("上傳新附件 (支援 JPG, PNG, PDF)", type=['png', 'jpg', 'jpeg', 'pdf'], key=f"uploader_{selected_quote_id}")
+            
+            if uploaded_file:
+                if st.button("💾 確認上傳並儲存", type="primary"):
+                    # 1. 執行上傳到 GCS
+                    new_gcs_object_name = save_uploaded_file(uploaded_file, selected_quote_id)
+                    
+                    if new_gcs_object_name:
+                        # 2. 更新 DataFrame (儲存 GCS 物件名稱)
+                        idx = st.session_state.data[st.session_state.data['ID'] == selected_quote_id].index[0]
+                        st.session_state.data.loc[idx, '附件'] = new_gcs_object_name
+                        st.session_state.data.loc[idx, '最後修改時間'] = datetime.now().strftime(DATETIME_FORMAT)
+                        
+                        # 3. 寫入 Google Sheets
+                        if 'write_data_to_sheets' in globals() and write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+                            st.toast(f"附件 {os.path.basename(new_gcs_object_name)} 上傳成功！")
+                            time.sleep(1) 
+                            st.rerun()
+                        else:
+                            st.error("❌ 寫入 Google Sheets 失敗，請檢查權限與連線。")
+                    else:
+                        st.error("❌ 檔案上傳 GCS 失敗。")
+
+
+        with col_preview:
+            st.markdown("#### 👁️ 附件預覽")
+            if gcs_object_name:
+                # 【GCS 預覽】使用 GCS 的公開存取 URL
+                # 注意：這要求您的 Bucket 必須設置為公開讀取權限
+                public_url = f"{GCS_BASE_URL}/{gcs_object_name}"
+                display_filename = os.path.basename(gcs_object_name)
+                
+                # 判斷副檔名
+                ext = os.path.splitext(display_filename)[1].lower()
+                
+                if ext in ['.png', '.jpg', '.jpeg']:
+                    st.image(public_url, caption=display_filename, use_container_width=True)
+                    
+                elif ext == '.pdf':
+                    # PDF 預覽，直接嵌入公開 URL
+                    pdf_display = f'<iframe src="{public_url}" width="100%" height="600" type="application/pdf"></iframe>'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                else:
+                    st.info(f"此檔案格式 ({ext}) 不支援頁面內預覽 (僅支援圖片/PDF)。")
+                    st.markdown(f"[點擊下載檔案: {display_filename}]({public_url})", unsafe_allow_html=True)
+            else:
+                st.caption("請選擇項目並上傳附件以進行預覽。")
+
+
+
+# *--- 9. 附件管理模組 - 結束 ---*
+
+
 
 # ******************************
 # *--- 8. 程式入口點 ---*
