@@ -176,8 +176,8 @@ def login_form():
 # ******************************
 
 
+
 # 【設定】測試版專用的工作表名稱
-# 將此變數定義在此處，會覆蓋 Section 1 的設定，強制進入測試模式
 DATA_SHEET_NAME = '採購總表_測試' 
 METADATA_SHEET_NAME = '專案設定_測試'
 
@@ -186,8 +186,8 @@ METADATA_SHEET_NAME = '專案設定_測試'
 def load_data_from_sheets():
     """直接使用 gspread 讀取 Google Sheets 中的數據 (測試版)。"""
     
-    # 定義標準欄位結構
-    expected_cols = ['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '標記刪除']
+    # 【修改點 1】新增 '附件' 欄位
+    expected_cols = ['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '附件', '標記刪除']
     
     if not SHEET_URL:
         st.info("❌ Google Sheets URL 尚未配置。使用空的數據結構。")
@@ -229,7 +229,7 @@ def load_data_from_sheets():
                     elif col in ['選取', '標記刪除']:
                          data_df[col] = False
                     else:
-                        data_df[col] = ''
+                        data_df[col] = '' # '附件' 預設為空字串
 
         # 【關鍵修正：布林值清洗】
         # 避免將空字串或異類格式誤判為 True，明確轉換
@@ -249,6 +249,10 @@ def load_data_from_sheets():
         valid_dtype_map = {col: dtype for col, dtype in dtype_map.items() if col in data_df.columns}
         if valid_dtype_map:
             data_df = data_df.astype(valid_dtype_map, errors='ignore')
+            
+        # 確保附件欄位是字串
+        if '附件' in data_df.columns:
+            data_df['附件'] = data_df['附件'].astype(str)
 
         # 日期欄位處理
         if '預計交貨日' in data_df.columns:
@@ -316,11 +320,15 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         df_export = df_export.fillna("")
         
         # 【關鍵修正：布林值序列化】
-        # gspread 不接受 numpy.bool_，必須轉為 Python 原生 bool
         for col in ['選取', '標記刪除']:
             if col in df_export.columns:
-                # 確保是布林型態，並轉為 Python bool
                 df_export[col] = df_export[col].apply(lambda x: bool(x))
+        
+        # 【修改點 2】確保附件欄位存在且為字串
+        if '附件' not in df_export.columns:
+            df_export['附件'] = ""
+        else:
+            df_export['附件'] = df_export['附件'].astype(str)
 
         # 轉為 object 以便相容
         df_export = df_export.astype(object) 
@@ -364,9 +372,6 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         st.error(f"❌ 數據寫回 Google Sheets 失敗！")
         st.code(f"寫入錯誤訊息: {e}")
         return False
-
-
-
 
 # *--- 2. 數據讀取與寫入函式 - 結束 ---*
 
@@ -1227,6 +1232,7 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
 
 
