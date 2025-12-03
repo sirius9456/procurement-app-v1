@@ -593,6 +593,7 @@ def render_attachment_module(df):
 # *--- 4. 邏輯處理函式 ---*
 # ******************************
 
+
 def handle_master_save():
     """批次處理所有 data_editor 的修改，並重新計算總價、更新個別報價時間戳記。"""
     
@@ -717,7 +718,7 @@ def trigger_delete_confirmation():
 
 def handle_batch_delete_quotes():
     """
-    第二步：執行刪除並同步刪除附件檔案。
+    第二步：執行刪除並同步刪除附件檔案 (GCS)。
     """
     
     # 1. 從 Session State 讀取「鎖定」的 ID 列表
@@ -733,19 +734,18 @@ def handle_batch_delete_quotes():
     main_df = st.session_state.data.copy() 
     deleted_quotes_df = main_df[main_df['ID'].isin(ids_to_delete)]
     
-    # 3. 刪除附件檔案
+    # 3. 刪除附件檔案 (GCS)
     deleted_file_count = 0
+    success = True
     for _, row in deleted_quotes_df.iterrows():
-        file_name = str(row.get('附件', '')).strip()
-        if file_name:
-            file_path = os.path.join("attachments", file_name)
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                    deleted_file_count += 1
-                except Exception as e:
-                    logging.warning(f"無法刪除附件檔案 {file_path}: {e}")
-                    
+        gcs_object_name = str(row.get('附件', '')).strip()
+        if gcs_object_name:
+            if delete_file_from_gcs(gcs_object_name):
+                deleted_file_count += 1
+            else:
+                success = False # 即使刪除失敗，也應繼續刪除資料庫記錄
+                logging.error(f"附件刪除 GCS 失敗: {gcs_object_name}")
+                
     # 4. 執行數據刪除：保留 ID 不在刪除列表中的項目
     df_after_delete = main_df[~main_df['ID'].isin(ids_to_delete)].reset_index(drop=True)
     
@@ -755,7 +755,10 @@ def handle_batch_delete_quotes():
     # 6. 寫入 Google Sheets
     if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
         st.session_state.show_delete_confirm = False
-        st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。({deleted_file_count} 個附件檔案已清除) Sheets 已更新。")
+        if success:
+            st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。({deleted_file_count} 個附件檔案已清除) Sheets 已更新。")
+        else:
+            st.warning(f"已刪除 {len(ids_to_delete)} 筆報價，但有部分附件檔案從 GCS 刪除失敗。Sheets 已更新。")
         
         # 清除編輯暫存與鎖定的 ID
         st.session_state.edited_dataframes = {} 
@@ -791,25 +794,24 @@ def handle_project_modification():
 
 
 def handle_delete_project(project_to_delete):
-    """刪除選定的專案及其所有相關報價。"""
+    """刪除選定的專案及其所有相關報價 (GCS)。"""
     
     if not project_to_delete:
         st.error("請選擇要刪除的專案。")
         return
 
-    # 刪除相關附件
+    # 刪除相關附件 (GCS)
     quotes_to_delete = st.session_state.data[st.session_state.data['專案名稱'] == project_to_delete]
     deleted_file_count = 0
+    success = True
     for _, row in quotes_to_delete.iterrows():
-        file_name = str(row.get('附件', '')).strip()
-        if file_name:
-            file_path = os.path.join("attachments", file_name)
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                    deleted_file_count += 1
-                except Exception as e:
-                    logging.warning(f"無法刪除附件檔案 {file_path}: {e}")
+        gcs_object_name = str(row.get('附件', '')).strip()
+        if gcs_object_name:
+            if delete_file_from_gcs(gcs_object_name):
+                deleted_file_count += 1
+            else:
+                success = False
+                logging.error(f"專案附件刪除 GCS 失敗: {gcs_object_name}")
     
     if project_to_delete in st.session_state.project_metadata:
         del st.session_state.project_metadata[project_to_delete]
@@ -822,7 +824,10 @@ def handle_delete_project(project_to_delete):
     deleted_count = initial_count - len(st.session_state.data)
 
     if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.success(f"✅ 專案 **{project_to_delete}** 及其相關的 {deleted_count} 筆報價已成功刪除。({deleted_file_count} 個附件檔案已清除) Sheets 已更新。")
+        if success:
+            st.success(f"✅ 專案 **{project_to_delete}** 及其相關的 {deleted_count} 筆報價已成功刪除。({deleted_file_count} 個附件檔案已清除) Sheets 已更新。")
+        else:
+            st.warning(f"已刪除專案 **{project_to_delete}**，但有部分附件檔案從 GCS 刪除失敗。Sheets 已更新。")
     
     st.rerun()
 
@@ -902,6 +907,7 @@ def handle_add_new_quote(latest_arrival_date):
     st.rerun()
 
 # *--- 4. 邏輯處理函式 - 結束 ---*
+
 
 
 # ******************************
@@ -1383,4 +1389,5 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
