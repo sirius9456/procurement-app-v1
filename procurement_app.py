@@ -19,21 +19,21 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # 版本號
-APP_VERSION = "V2.2.9 (Fix Date & Attachment Display)" # 更新版本號
+APP_VERSION = "V2.2.10 (Attachment Deletion & Clickable)" 
 
 # 時間格式
 DATE_FORMAT = "%Y-%m-%d"
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # --- Google Sheets URL 設定 ---
-# 優先順序：1. 環境變數 (GCE) -> 2. Streamlit Secrets -> 3. 預設/硬編碼
+# 已更新為您提供的網址
 if "GCE_SHEET_URL" in os.environ:
     SHEET_URL = os.environ["GCE_SHEET_URL"]
 else:
     try:
         SHEET_URL = st.secrets["spreadsheet"]["url"]
     except:
-        SHEET_URL = "https://docs.google.com/spreadsheets/d/16vSMLx-GYcIpV2cuyGIeZctvA2sI8zcqh9NKKyrs-uY/edit?usp=sharing" # 請確保此處為您的實際 URL
+        SHEET_URL = "https://docs.google.com/spreadsheets/d/16vSMLx-GYcIpV2cuyGIeZctvA2sI8zcqh9NKKyrs-uY/edit?usp=sharing"
 
 # 工作表名稱 (測試版專用)
 DATA_SHEET_NAME = '採購總表_測試'
@@ -117,6 +117,13 @@ CUSTOM_CSS = """
     input[type="date"]::-webkit-calendar-picker-indicator {
         filter: invert(1) grayscale(100%) brightness(200%) !important;
         cursor: pointer;
+    }
+    
+    /* 讓表格內連結看起來像連結 */
+    .st-ag-row a {
+        color: #2196F3 !important; /* 藍色連結 */
+        text-decoration: underline !important;
+        cursor: pointer !important;
     }
 </style>
 """
@@ -344,7 +351,7 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         
         # --- 3. 寫入專案設定 (Metadata) ---
         metadata_list = [
-            # 【修正點 2】使用 from datetime import date 的 date
+            # 使用 from datetime import date 的 date
             {'專案名稱': name, 
              '專案交貨日': data['due_date'].strftime(DATE_FORMAT) if isinstance(data['due_date'], (datetime, date)) else str(data['due_date']),
              '緩衝天數': int(data['buffer_days']), 
@@ -514,16 +521,34 @@ def render_attachment_module(df):
     st.markdown("---")
     st.subheader("📎 報價附件管理中心")
     
+    # 0. 處理來自表格點擊的預覽請求
+    auto_preview_id = st.session_state.get('preview_from_table_id', None)
+    initial_proj = "請選擇..."
+    initial_item_key = "請選擇..."
+    
+    if auto_preview_id is not None:
+        try:
+            row = df[df['ID'] == auto_preview_id].iloc[0]
+            initial_proj = row['專案名稱']
+            initial_item_key = f"{row['ID']} - {row['專案項目']} ({row['供應商']})"
+            # 清除狀態，確保下次重新運行時不會自動選擇，除非再次點擊表格
+            st.session_state.preview_from_table_id = None 
+        except:
+            pass
+            
     # 1. 選擇器
     col_sel1, col_sel2 = st.columns([1, 2])
     
     selected_quote_id = None
     selected_quote_row = None
     
+    # 篩選專案並預設選擇
+    all_projects = df['專案名稱'].unique().tolist()
+    initial_proj_list = ["請選擇..."] + all_projects
+    initial_proj_index = initial_proj_list.index(initial_proj) if initial_proj in initial_proj_list else 0
+    
     with col_sel1:
-        # 篩選專案
-        all_projects = df['專案名稱'].unique().tolist()
-        selected_proj = st.selectbox("📂 選擇專案", ["請選擇..."] + all_projects, key="att_proj_select")
+        selected_proj = st.selectbox("📂 選擇專案", initial_proj_list, index=initial_proj_index, key="att_proj_select")
         
     with col_sel2:
         if selected_proj != "請選擇...":
@@ -532,12 +557,15 @@ def render_attachment_module(df):
             # 建立選單標籤: ID - 項目 - 供應商
             quote_options = {f"{row['ID']} - {row['專案項目']} ({row['供應商']})": row['ID'] for _, row in proj_df.iterrows()}
             
-            selected_option = st.selectbox("📄 選擇報價項目", ["請選擇..."] + list(quote_options.keys()), key="att_item_select")
+            # 篩選報價項目並預設選擇
+            initial_item_list = ["請選擇..."] + list(quote_options.keys())
+            initial_item_index = initial_item_list.index(initial_item_key) if initial_item_key in initial_item_list else 0
+            
+            selected_option = st.selectbox("📄 選擇報價項目", initial_item_list, index=initial_item_index, key="att_item_select")
             
             if selected_option != "請選擇...":
                 selected_quote_id = quote_options[selected_option]
                 # 取得該列資料
-                # 這裡假設 ID 是唯一的，使用 .iloc[0]
                 selected_quote_row = df[df['ID'] == selected_quote_id].iloc[0]
 
     # 2. 附件操作區
@@ -574,7 +602,6 @@ def render_attachment_module(df):
                         st.session_state.data.loc[idx, '最後修改時間'] = datetime.now().strftime(DATETIME_FORMAT)
                         
                         # 3. 寫入 Google Sheets
-                        # 這裡需要用到 write_data_to_sheets，故假設它已存在於 Session State 或全域
                         if 'write_data_to_sheets' in globals() and write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
                             st.toast(f"附件 {saved_filename} 上傳成功！")
                             time.sleep(1) 
@@ -636,7 +663,6 @@ def handle_master_save():
     main_df = st.session_state.data.copy()
     current_time_str = datetime.now().strftime(DATETIME_FORMAT)
     
-    # affected_projects = set() # 不再需要追蹤受影響的專案來更新時間
     changes_detected = False
     
     # 確保 DataFrame 有 '最後修改時間' 欄位，如果沒有則建立並用空字串填充
@@ -751,8 +777,7 @@ def trigger_delete_confirmation():
 
 def handle_batch_delete_quotes():
     """
-    第二步：執行刪除。
-    直接讀取第一步鎖定的 ID 列表進行刪除，確保操作一致性。
+    第二步：執行刪除並同步刪除附件檔案。
     """
     
     # 1. 從 Session State 讀取「鎖定」的 ID 列表
@@ -764,17 +789,33 @@ def handle_batch_delete_quotes():
         st.rerun()
         return
 
-    # 2. 執行刪除：保留 ID 不在刪除列表中的項目
-    main_df = st.session_state.data
+    # 2. 識別要刪除的項目及其附件
+    main_df = st.session_state.data.copy() 
+    deleted_quotes_df = main_df[main_df['ID'].isin(ids_to_delete)]
+    
+    # 3. 刪除附件檔案
+    deleted_file_count = 0
+    for _, row in deleted_quotes_df.iterrows():
+        file_name = str(row.get('附件', '')).strip()
+        if file_name:
+            file_path = os.path.join("attachments", file_name)
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    deleted_file_count += 1
+                except Exception as e:
+                    logging.warning(f"無法刪除附件檔案 {file_path}: {e}")
+                    
+    # 4. 執行數據刪除：保留 ID 不在刪除列表中的項目
     df_after_delete = main_df[~main_df['ID'].isin(ids_to_delete)].reset_index(drop=True)
     
-    # 3. 更新 Session State
+    # 5. 更新 Session State
     st.session_state.data = df_after_delete
     
-    # 4. 寫入 Google Sheets
+    # 6. 寫入 Google Sheets
     if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
         st.session_state.show_delete_confirm = False
-        st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。Sheets 已更新。")
+        st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。({deleted_file_count} 個附件檔案已清除) Sheets 已更新。")
         
         # 清除編輯暫存與鎖定的 ID
         st.session_state.edited_dataframes = {} 
@@ -816,6 +857,20 @@ def handle_delete_project(project_to_delete):
         st.error("請選擇要刪除的專案。")
         return
 
+    # 刪除相關附件
+    quotes_to_delete = st.session_state.data[st.session_state.data['專案名稱'] == project_to_delete]
+    deleted_file_count = 0
+    for _, row in quotes_to_delete.iterrows():
+        file_name = str(row.get('附件', '')).strip()
+        if file_name:
+            file_path = os.path.join("attachments", file_name)
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    deleted_file_count += 1
+                except Exception as e:
+                    logging.warning(f"無法刪除附件檔案 {file_path}: {e}")
+    
     if project_to_delete in st.session_state.project_metadata:
         del st.session_state.project_metadata[project_to_delete]
 
@@ -827,7 +882,7 @@ def handle_delete_project(project_to_delete):
     deleted_count = initial_count - len(st.session_state.data)
 
     if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.success(f"✅ 專案 **{project_to_delete}** 及其相關的 {deleted_count} 筆報價已成功刪除。Sheets 已更新。")
+        st.success(f"✅ 專案 **{project_to_delete}** 及其相關的 {deleted_count} 筆報價已成功刪除。({deleted_file_count} 個附件檔案已清除) Sheets 已更新。")
     
     st.rerun()
 
@@ -932,6 +987,8 @@ def initialize_session_state():
     if 'calculated_delivery_date' not in st.session_state: st.session_state.calculated_delivery_date = today
     if 'show_delete_confirm' not in st.session_state: st.session_state.show_delete_confirm = False
     if 'delete_count' not in st.session_state: st.session_state.delete_count = 0
+    # 新增 Session State 變數用於表格點擊預覽
+    if 'preview_from_table_id' not in st.session_state: st.session_state.preview_from_table_id = None
 # *--- 5. Session State 初始化函式 - 結束 ---*
 
 
@@ -1154,13 +1211,25 @@ def render_project_tables(df, project_metadata):
     
     is_locked = st.session_state.show_delete_confirm
 
+    # 【新增功能：處理點擊事件】
+    # 檢查是否有來自表格的點擊，如果有，更新 Session State
+    query_params = st.experimental_get_query_params()
+    if 'preview_id' in query_params:
+        try:
+            clicked_id = int(query_params['preview_id'][0])
+            st.session_state.preview_from_table_id = clicked_id
+        except:
+            pass
+        # 清除 URL 參數，避免重整時重複觸發
+        st.experimental_set_query_params(preview_id=None)
+
+
     for i, proj_name in enumerate(project_names):
         proj_data = project_groups.get_group(proj_name)
         meta = project_metadata.get(proj_name, {})
         proj_budget = calculate_project_budget(df, proj_name)
         
         # --- 計算最慢到貨日 (專案交期 - 緩衝天數) ---
-        # 確保 due_date 是 date 物件，以便進行計算
         due_date_val = meta.get('due_date')
         if isinstance(due_date_val, str):
             try:
@@ -1168,7 +1237,6 @@ def render_project_tables(df, project_metadata):
             except:
                 due_date_val = datetime.now().date()
         
-        # 取得緩衝天數並計算
         buffer_days_val = int(meta.get('buffer_days', 7))
         latest_arrival_proj = due_date_val - timedelta(days=buffer_days_val)
         latest_arrival_str = latest_arrival_proj.strftime(DATE_FORMAT)
@@ -1206,19 +1274,29 @@ def render_project_tables(df, project_metadata):
                     temp_series = pd.to_datetime(editable_df['預計交貨日'], errors='coerce')
                     editable_df['預計交貨日'] = temp_series.apply(lambda x: x.date() if pd.notnull(x) else None)
                 
-                # 確保採購最慢到貨日也是純 date 格式
                 if '採購最慢到貨日' in editable_df.columns:
                     temp_limit = pd.to_datetime(editable_df['採購最慢到貨日'], errors='coerce')
                     editable_df['採購最慢到貨日'] = temp_limit.apply(lambda x: x.date() if pd.notnull(x) else None)
                 
-                # 確保 '最後修改時間' 欄位存在
                 if '最後修改時間' not in editable_df.columns:
                     editable_df['最後修改時間'] = ''
 
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                # 【修正點 3】表格欄位顯示順序：新增 '附件'
-                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '附件', '最後修改時間', '標記刪除']
+                # 【新增功能：附件連結】在 DataFrame 中創建顯示用的連結欄位
+                def create_link_markdown(row):
+                    file_name = row.get('附件', '').strip()
+                    quote_id = row['ID']
+                    if file_name:
+                        # 創建一個連結到當前頁面，但帶有 query parameter 的連結
+                        # 點擊後會觸發 run_app 頂部的邏輯，設置 session state 進行預覽
+                        return f"[📎 {file_name}](?preview_id={quote_id})" 
+                    return ""
+                
+                editable_df['附件_display'] = editable_df.apply(create_link_markdown, axis=1)
+                
+                # 【修正點 3】表格欄位顯示順序：將 '附件_display' 放在 '最後修改時間' 之後
+                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '附件_display', '標記刪除'] 
 
                 # 使用 column_order 來控制顯示
                 edited_df_value = st.data_editor(
@@ -1231,7 +1309,6 @@ def render_project_tables(df, project_metadata):
                         "數量": st.column_config.NumberColumn("數量"),
                         "總價": st.column_config.NumberColumn("總價", format="$%d", disabled=True),
                         
-                        # 【日期欄位】純淨的日期，支援月曆選單
                         "預計交貨日": st.column_config.DateColumn(
                             "預計交貨日", 
                             min_value=datetime(2020, 1, 1).date(),
@@ -1241,21 +1318,18 @@ def render_project_tables(df, project_metadata):
                             help="點擊兩下以開啟月曆選單"
                         ),
                         
-                        # 【判定欄位】獨立顯示判定圖示，禁止編輯
                         "交期判定": st.column_config.Column("判定", width="tiny", help="❌: 延誤 / ✅: 準時", disabled=True),
-                        
                         "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
                         
-                        # 【修正點 4】新增 '附件' 欄位配置
-                        "附件": st.column_config.TextColumn("附件", disabled=True, width="medium", help="關聯的附件檔名，請在底部附件管理區操作"),
-                        
-                        # 【新欄位配置】
                         "最後修改時間": st.column_config.TextColumn(
                             "最後修改時間",
                             disabled=True,
                             width="medium",
                             help="報價項目最後儲存的時間"
                         ),
+                        
+                        # 【修正點 4】附件欄位配置為唯讀連結顯示
+                        "附件_display": st.column_config.TextColumn("附件", disabled=True, width="medium", help="點擊檔名可跳轉至下方預覽"),
                         
                         "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny"), 
                     },
@@ -1351,7 +1425,7 @@ def run_app():
     render_batch_operations()
     render_project_tables(df, project_metadata) 
     
-    # 【新增】呼叫附件管理模組 - 由於函式已移到前面定義，現在可以順利呼叫
+    # 【新增】呼叫附件管理模組 
     render_attachment_module(df)
 
 # ******************************
@@ -1369,4 +1443,3 @@ def main():
         
 if __name__ == "__main__":
     main()
-
