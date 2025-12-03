@@ -28,7 +28,7 @@ DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 try:
     SHEET_URL = st.secrets["spreadsheet"]["url"]
 except:
-    SHEET_URL = "https://docs.google.com/spreadsheets/d/1g1Lg1k1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1/edit" # 請確保此處為您的實際 URL
+    SHEET_URL = "https://docs.google.com/spreadsheets/d/16vSMLx-GYcIpV2cuyGIeZctvA2sI8zcqh9NKKyrs-uY/edit?usp=sharing" # 請確保此處為您的實際 URL
 
 # 工作表名稱
 DATA_SHEET_NAME = '採購總表'
@@ -1192,3 +1192,4 @@ def main():
         
 if __name__ == "__main__":
     main()
+
