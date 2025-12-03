@@ -551,6 +551,7 @@ def delete_file_from_gcs(gcs_object_name):
 # *--- 9. 附件管理模組 (新功能) ---*
 # ******************************
 
+
 import base64
 
 def save_uploaded_file(uploaded_file, quote_id):
@@ -667,29 +668,45 @@ def render_attachment_module(df):
         with col_preview:
             st.markdown("#### 👁️ 附件預覽")
             if gcs_object_name:
-                # 【GCS 預覽】使用 GCS 的公開存取 URL
-                # 注意：這要求您的 Bucket 必須設置為公開讀取權限
-                public_url = f"{GCS_BASE_URL}/{gcs_object_name}"
-                display_filename = os.path.basename(gcs_object_name)
                 
-                # *** 新增 GCS 存取警告與除錯資訊 ***
-                st.warning("⚠️ **GCS 存取警告**：預覽失敗通常是因為您的 GCS Bucket 或檔案未設定為 **公開讀取 (Public Read)** 權限。")
-                st.caption(f"請在新視窗中檢查這個網址的連線是否正常（可能需要手動複製貼上）：`{public_url}`")
-                
-                # 判斷副檔名
-                ext = os.path.splitext(display_filename)[1].lower()
-                
-                if ext in ['.png', '.jpg', '.jpeg']:
-                    # 使用 st.image
-                    st.image(public_url, caption=display_filename, use_container_width=True)
+                # 【安全存取：生成預先簽章網址 (Signed URL)】
+                # 這要求應用程式 (Streamlit) 必須使用具備 'storage.objects.get' 權限的服務帳戶運行。
+                try:
+                    client = get_gcs_client()
+                    bucket = client.bucket(GCS_BUCKET_NAME)
+                    blob = bucket.blob(gcs_object_name)
                     
-                elif ext == '.pdf':
-                    # PDF 預覽，直接嵌入公開 URL
-                    pdf_display = f'<iframe src="{public_url}" width="100%" height="600" type="application/pdf"></iframe>'
-                    st.markdown(pdf_display, unsafe_allow_html=True)
-                else:
-                    st.info(f"此檔案格式 ({ext}) 不支援頁面內預覽 (僅支援圖片/PDF)。")
-                    st.markdown(f"[點擊下載檔案: {display_filename}]({public_url})", unsafe_allow_html=True)
+                    # 生成一個 10 分鐘後失效的網址
+                    signed_url = blob.generate_signed_url(
+                        version="v4",
+                        expiration=timedelta(minutes=10), 
+                        method="GET"
+                    )
+                    public_url = signed_url # 用 signed_url 替換原本的公開 URL
+                    display_filename = os.path.basename(gcs_object_name)
+                    
+                    # *** 替換 GCS 存取警告，改為安全存取提示 ***
+                    st.info("🔒 **安全存取**：此預覽透過 10 分鐘有效期的**預先簽章網址**提供。")
+                    st.caption(f"請在新視窗中檢查這個網址的連線是否正常（可能需要手動複製貼上）：`{public_url[:100]}...` (網址已縮短)")
+                    
+                    # 判斷副檔名
+                    ext = os.path.splitext(display_filename)[1].lower()
+                    
+                    if ext in ['.png', '.jpg', '.jpeg']:
+                        # 使用 st.image
+                        st.image(public_url, caption=display_filename, use_container_width=True)
+                        
+                    elif ext == '.pdf':
+                        # PDF 預覽，使用 Signed URL 嵌入
+                        pdf_display = f'<iframe src="{public_url}" width="100%" height="600" type="application/pdf"></iframe>'
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+                    else:
+                        st.info(f"此檔案格式 ({ext}) 不支援頁面內預覽 (僅支援圖片/PDF)。")
+                        st.markdown(f"[點擊下載檔案: {display_filename}]({public_url})", unsafe_allow_html=True)
+                        
+                except Exception as e:
+                    st.error(f"❌ 無法生成預先簽章網址，預覽失敗！錯誤：{e}")
+                    st.caption("請確認應用程式使用的服務帳戶是否有權限讀取 GCS 上的檔案 (`storage.objects.get`)。")
             else:
                 st.caption("請選擇項目並上傳附件以進行預覽。")
 
@@ -1503,6 +1520,7 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
 
 
