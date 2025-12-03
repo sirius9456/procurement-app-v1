@@ -177,7 +177,7 @@ def login_form():
 # *--- 2. 數據讀取與寫入函式 ---*
 # ******************************
 
-# 【修改：移除測試專用變數，直接使用 DATA_SHEET_NAME/METADATA_SHEET_NAME】
+
 
 # 【修改】暫時註解掉快取功能，強制每次重整都讀取最新資料
 # @st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
@@ -204,7 +204,6 @@ def load_data_from_sheets():
         sh = gc.open_by_url(SHEET_URL)
         
         # --- 2. 讀取採購總表 (Data) ---
-        # 【修改：讀取正式分頁】
         try:
             data_ws = sh.worksheet(DATA_SHEET_NAME)
         except gspread.exceptions.WorksheetNotFound:
@@ -221,31 +220,41 @@ def load_data_from_sheets():
         else:
             for col in expected_cols:
                 if col not in data_df.columns:
-                    if col in ['選取', '標記刪除']:
-                        data_df[col] = False
-                    elif col in ['ID', '數量']:
+                    if col in ['ID', '數量']:
                         data_df[col] = 0
                     elif col in ['單價', '總價']:
                         data_df[col] = 0.0
+                    elif col in ['選取', '標記刪除']:
+                         data_df[col] = False
                     else:
                         data_df[col] = ''
 
-        # 數據類型轉換與處理
+        # 【關鍵修正：布林值清洗】
+        # 避免將空字串或異類格式誤判為 True，明確轉換
+        def clean_bool(x):
+            if isinstance(x, bool): return x
+            # 只有字串明確為 "TRUE" (不分大小寫) 才算 True，其餘皆 False
+            return str(x).strip().upper() == 'TRUE'
+
+        for col in ['選取', '標記刪除']:
+            if col in data_df.columns:
+                data_df[col] = data_df[col].apply(clean_bool)
+
+        # 數據類型轉換 (其他欄位)
         dtype_map = {
-            'ID': 'Int64', '選取': 'bool', '單價': 'float', '數量': 'Int64', 
-            '總價': 'float', '標記刪除': 'bool'
+            'ID': 'Int64', '單價': 'float', '數量': 'Int64', '總價': 'float'
         }
         valid_dtype_map = {col: dtype for col, dtype in dtype_map.items() if col in data_df.columns}
         if valid_dtype_map:
             data_df = data_df.astype(valid_dtype_map, errors='ignore')
 
+        # 日期欄位處理
         if '預計交貨日' in data_df.columns:
             data_df['預計交貨日'] = pd.to_datetime(data_df['預計交貨日'], errors='coerce', format=DATE_FORMAT) 
         if '採購最慢到貨日' in data_df.columns:
             data_df['採購最慢到貨日'] = pd.to_datetime(data_df['採購最慢到貨日'], errors='coerce', format=DATE_FORMAT) 
         
         # --- 3. 讀取專案設定 (Metadata) ---
-        # 【修改：讀取正式分頁】
         try:
             metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
         except gspread.exceptions.WorksheetNotFound:
@@ -269,7 +278,7 @@ def load_data_from_sheets():
                     'last_modified': str(row.get('最後修改', ''))
                 }
 
-        st.success(f"✅ 數據已從 `{DATA_SHEET_NAME}` 及 `{METADATA_SHEET_NAME}` 載入！") # 更新成功訊息
+        st.success(f"✅ 數據已從 `{DATA_SHEET_NAME}` 及 `{METADATA_SHEET_NAME}` 載入！") 
         return data_df, project_metadata
 
     except Exception as e:
@@ -296,14 +305,24 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         cols_to_drop = ['交期判定', '交期顯示']
         df_export = df_to_write.drop(columns=[c for c in cols_to_drop if c in df_to_write.columns], errors='ignore')
 
+        # 日期轉字串
         for col in ['預計交貨日', '採購最慢到貨日']:
             if col in df_export.columns:
                 df_export[col] = pd.to_datetime(df_export[col], errors='coerce').dt.strftime(DATE_FORMAT).fillna("")
                 
+        # 填充空值
         df_export = df_export.fillna("")
+        
+        # 【關鍵修正：布林值序列化】
+        # gspread 不接受 numpy.bool_，必須轉為 Python 原生 bool
+        for col in ['選取', '標記刪除']:
+            if col in df_export.columns:
+                # 確保是布林型態，並轉為 Python bool
+                df_export[col] = df_export[col].apply(lambda x: bool(x))
+
+        # 轉為 object 以便相容
         df_export = df_export.astype(object) 
                 
-        # 【修改：寫入正式分頁】
         try:
             data_ws = sh.worksheet(DATA_SHEET_NAME)
         except gspread.exceptions.WorksheetNotFound:
@@ -311,6 +330,7 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
             return False
 
         data_ws.clear()
+        # 將 DataFrame 轉為列表列表 (List of Lists)
         data_to_update = [df_export.columns.values.tolist()] + df_export.values.tolist()
         data_ws.update(data_to_update)
         
@@ -324,7 +344,6 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         ]
         metadata_df = pd.DataFrame(metadata_list)
         
-        # 【修改：寫入正式設定分頁】
         try:
             metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
         except gspread.exceptions.WorksheetNotFound:
@@ -343,9 +362,6 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         st.error(f"❌ 數據寫回 Google Sheets 失敗！")
         st.code(f"寫入錯誤訊息: {e}")
         return False
-
-
-
 
 
 # *--- 2. 數據讀取與寫入函式 - 結束 ---*
@@ -1207,4 +1223,5 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
