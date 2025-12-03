@@ -151,12 +151,12 @@ def login_form():
 # ******************************
 
 
-
 # 【設定】測試版專用的工作表名稱，請務必在 Google Sheets 中建立這兩個分頁
 TEST_DATA_SHEET_NAME = '採購總表_測試' 
 TEST_METADATA_SHEET_NAME = '專案設定_測試'
 
-@st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
+# 【修改】暫時註解掉快取功能，強制每次重整都讀取最新資料
+# @st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
 def load_data_from_sheets():
     """直接使用 gspread 讀取 Google Sheets 中的數據。"""
     
@@ -1215,6 +1215,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
