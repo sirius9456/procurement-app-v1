@@ -1030,7 +1030,7 @@ def render_project_tables(df, project_metadata):
         expander_key = f"expander_{proj_name}"
 
         # 監聽 Expander 點擊事件
-        with st.expander(label=f"專案：{proj_name} (點擊展開)", expanded=(i == 0)): 
+        with st.expander(label=f"專案：{proj_name} (點擊展開)", expanded=False): 
             st.markdown(header_html, unsafe_allow_html=True)
             
             for item_name, item_data in proj_data.groupby('專案項目'):
@@ -1205,3 +1205,4 @@ def main():
         
 if __name__ == "__main__":
     main()
+
