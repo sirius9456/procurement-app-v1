@@ -550,6 +550,7 @@ def delete_file_from_gcs(gcs_object_name):
 # ******************************
 # *--- 9. 附件管理模組 (新功能) ---*
 # ******************************
+
 import base64
 
 def save_uploaded_file(uploaded_file, quote_id):
@@ -671,10 +672,15 @@ def render_attachment_module(df):
                 public_url = f"{GCS_BASE_URL}/{gcs_object_name}"
                 display_filename = os.path.basename(gcs_object_name)
                 
+                # *** 新增 GCS 存取警告與除錯資訊 ***
+                st.warning("⚠️ **GCS 存取警告**：預覽失敗通常是因為您的 GCS Bucket 或檔案未設定為 **公開讀取 (Public Read)** 權限。")
+                st.caption(f"請在新視窗中檢查這個網址的連線是否正常（可能需要手動複製貼上）：`{public_url}`")
+                
                 # 判斷副檔名
                 ext = os.path.splitext(display_filename)[1].lower()
                 
                 if ext in ['.png', '.jpg', '.jpeg']:
+                    # 使用 st.image
                     st.image(public_url, caption=display_filename, use_container_width=True)
                     
                 elif ext == '.pdf':
@@ -686,6 +692,7 @@ def render_attachment_module(df):
                     st.markdown(f"[點擊下載檔案: {display_filename}]({public_url})", unsafe_allow_html=True)
             else:
                 st.caption("請選擇項目並上傳附件以進行預覽。")
+
 
 # *--- 9. 附件管理模組 - 結束 ---*
 
@@ -1496,6 +1503,7 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
 
 
