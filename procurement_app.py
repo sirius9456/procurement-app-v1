@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+# 【修正點 1】新增 date 導入，解決 NameError: name 'date' is not defined
+from datetime import datetime, timedelta, date 
 from io import BytesIO
 import os 
 import json
@@ -18,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # 版本號
-APP_VERSION = "V2.2.7 (Integrate Attachment Module)"
+APP_VERSION = "V2.2.9 (Fix Date & Attachment Display)" # 更新版本號
 
 # 時間格式
 DATE_FORMAT = "%Y-%m-%d"
@@ -270,6 +271,7 @@ def load_data_from_sheets():
         if metadata_records:
             for row in metadata_records:
                 try:
+                    # 使用 from datetime import date 的 date
                     due_date = pd.to_datetime(str(row['專案交貨日'])).date()
                 except (ValueError, TypeError):
                     due_date = datetime.now().date()
@@ -342,6 +344,7 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         
         # --- 3. 寫入專案設定 (Metadata) ---
         metadata_list = [
+            # 【修正點 2】使用 from datetime import date 的 date
             {'專案名稱': name, 
              '專案交貨日': data['due_date'].strftime(DATE_FORMAT) if isinstance(data['due_date'], (datetime, date)) else str(data['due_date']),
              '緩衝天數': int(data['buffer_days']), 
@@ -366,7 +369,7 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
     except Exception as e:
         logging.exception("Google Sheets 數據寫入時發生致命錯誤！")
         st.error(f"❌ 數據寫回 Google Sheets 失敗！")
-        st.code(f"寫入錯誤訊息: {e}")
+        st.code(f"錯誤訊息: {e}")
         return False
 # *--- 2. 數據讀取與寫入函式 - 結束 ---*
 
@@ -475,6 +478,148 @@ def calculate_latest_arrival_dates(df, metadata):
     
     return df
 # *--- 3. 輔助函式區 - 結束 ---*
+
+
+# ******************************
+# *--- 9. 附件管理模組 (新功能) ---*
+# ******************************
+# 【修正點】將此區塊移到區塊 4 之前，確保主程式呼叫時函式已定義
+def save_uploaded_file(uploaded_file, quote_id):
+    """將上傳的檔案存到本地 attachments 資料夾，並回傳檔名。"""
+    if uploaded_file is None:
+        return None
+    
+    # 建立附件資料夾
+    folder = "attachments"
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+        
+    # 產生安全檔名 (ID_原始檔名)
+    # 為了避免中文或特殊符號問題，僅用 ID 和副檔名組合，但保留上傳名稱方便使用者識別
+    file_ext = os.path.splitext(uploaded_file.name)[1]
+    file_name = f"{quote_id}_{uploaded_file.name}"
+    file_path = os.path.join(folder, file_name)
+    
+    # 寫入檔案
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+        
+    return file_name
+
+def render_attachment_module(df):
+    """
+    渲染獨立的附件管理區塊。
+    功能：選擇報價 -> 上傳/檢視附件 (支援圖片與 PDF 預覽)
+    """
+    st.markdown("---")
+    st.subheader("📎 報價附件管理中心")
+    
+    # 1. 選擇器
+    col_sel1, col_sel2 = st.columns([1, 2])
+    
+    selected_quote_id = None
+    selected_quote_row = None
+    
+    with col_sel1:
+        # 篩選專案
+        all_projects = df['專案名稱'].unique().tolist()
+        selected_proj = st.selectbox("📂 選擇專案", ["請選擇..."] + all_projects, key="att_proj_select")
+        
+    with col_sel2:
+        if selected_proj != "請選擇...":
+            # 篩選該專案下的報價項目
+            proj_df = df[df['專案名稱'] == selected_proj]
+            # 建立選單標籤: ID - 項目 - 供應商
+            quote_options = {f"{row['ID']} - {row['專案項目']} ({row['供應商']})": row['ID'] for _, row in proj_df.iterrows()}
+            
+            selected_option = st.selectbox("📄 選擇報價項目", ["請選擇..."] + list(quote_options.keys()), key="att_item_select")
+            
+            if selected_option != "請選擇...":
+                selected_quote_id = quote_options[selected_option]
+                # 取得該列資料
+                # 這裡假設 ID 是唯一的，使用 .iloc[0]
+                selected_quote_row = df[df['ID'] == selected_quote_id].iloc[0]
+
+    # 2. 附件操作區
+    if selected_quote_id is not None and selected_quote_row is not None:
+        
+        col_upload, col_preview = st.columns([1, 1.5], gap="large")
+        
+        # 確保 '附件' 欄位存在，避免 KeyError
+        current_file = str(selected_quote_row.get('附件', '')).strip()
+        
+        with col_upload:
+            st.info(f"正在編輯 ID: **{selected_quote_id}** 的附件")
+            
+            # 顯示目前附件狀態
+            if current_file:
+                st.success(f"✅ 目前已有附件：`{current_file}`")
+                st.caption(f"檔案路徑: attachments/{current_file}")
+            else:
+                st.warning("目前無附件")
+                
+            # 上傳元件
+            uploaded_file = st.file_uploader("上傳新附件 (支援 JPG, PNG, PDF)", type=['png', 'jpg', 'jpeg', 'pdf'], key=f"uploader_{selected_quote_id}")
+            
+            if uploaded_file:
+                if st.button("💾 確認上傳並儲存", type="primary"):
+                    # 1. 存檔案
+                    saved_filename = save_uploaded_file(uploaded_file, selected_quote_id)
+                    
+                    if saved_filename:
+                        # 2. 更新 DataFrame
+                        # 找到主數據中的索引
+                        idx = st.session_state.data[st.session_state.data['ID'] == selected_quote_id].index[0]
+                        st.session_state.data.loc[idx, '附件'] = saved_filename
+                        st.session_state.data.loc[idx, '最後修改時間'] = datetime.now().strftime(DATETIME_FORMAT)
+                        
+                        # 3. 寫入 Google Sheets
+                        # 這裡需要用到 write_data_to_sheets，故假設它已存在於 Session State 或全域
+                        if 'write_data_to_sheets' in globals() and write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+                            st.toast(f"附件 {saved_filename} 上傳成功！")
+                            time.sleep(1) 
+                            st.rerun()
+                        else:
+                            st.error("❌ 寫入 Google Sheets 失敗，請檢查權限與連線。")
+                    else:
+                        st.error("❌ 檔案儲存失敗。")
+
+
+        with col_preview:
+            st.markdown("#### 👁️ 附件預覽")
+            if current_file:
+                file_path = os.path.join("attachments", current_file)
+                
+                if os.path.exists(file_path):
+                    # 判斷副檔名
+                    ext = os.path.splitext(current_file)[1].lower()
+                    
+                    if ext in ['.png', '.jpg', '.jpeg']:
+                        st.image(file_path, caption=current_file, use_column_width=True)
+                        
+                    elif ext == '.pdf':
+                        # PDF 預覽邏輯 (使用 base64嵌入 iframe)
+                        try:
+                            with open(file_path, "rb") as f:
+                                base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+                            pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
+                            st.markdown(pdf_display, unsafe_allow_html=True)
+                        except Exception as e:
+                            st.error(f"PDF 預覽失敗: {e}")
+                    else:
+                        st.info("此檔案格式不支援頁面內預覽 (僅支援圖片/PDF)。")
+                        st.download_button(
+                            label=f"⬇️ 下載 {current_file}",
+                            data=open(file_path, "rb").read(),
+                            file_name=current_file,
+                            mime='application/octet-stream'
+                        )
+                else:
+                    st.error(f"❌ 找不到檔案：{current_file} (可能是在其他裝置上傳的，或檔案已遺失)")
+            else:
+                st.caption("請選擇項目並上傳附件以進行預覽。")
+
+# *--- 9. 附件管理模組 - 結束 ---*
 
 
 # ******************************
@@ -1072,8 +1217,8 @@ def render_project_tables(df, project_metadata):
 
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                # 【表格欄位調整】欄位顯示順序
-                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '標記刪除']
+                # 【修正點 3】表格欄位顯示順序：新增 '附件'
+                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '附件', '最後修改時間', '標記刪除']
 
                 # 使用 column_order 來控制顯示
                 edited_df_value = st.data_editor(
@@ -1100,6 +1245,9 @@ def render_project_tables(df, project_metadata):
                         "交期判定": st.column_config.Column("判定", width="tiny", help="❌: 延誤 / ✅: 準時", disabled=True),
                         
                         "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
+                        
+                        # 【修正點 4】新增 '附件' 欄位配置
+                        "附件": st.column_config.TextColumn("附件檔名", disabled=True, width="medium", help="關聯的附件檔名，請在底部附件管理區操作"),
                         
                         # 【新欄位配置】
                         "最後修改時間": st.column_config.TextColumn(
@@ -1203,154 +1351,8 @@ def run_app():
     render_batch_operations()
     render_project_tables(df, project_metadata) 
     
-    # 【新增】呼叫附件管理模組
+    # 【新增】呼叫附件管理模組 - 由於函式已移到前面定義，現在可以順利呼叫
     render_attachment_module(df)
-
-
-# ******************************
-# *--- 9. 附件管理模組 (新功能) ---*
-# ******************************
-import base64
-
-def save_uploaded_file(uploaded_file, quote_id):
-    """將上傳的檔案存到本地 attachments 資料夾，並回傳檔名。"""
-    if uploaded_file is None:
-        return None
-    
-    # 建立附件資料夾
-    folder = "attachments"
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-        
-    # 產生安全檔名 (ID_原始檔名)
-    # 為了避免中文或特殊符號問題，僅用 ID 和副檔名組合，但保留上傳名稱方便使用者識別
-    file_ext = os.path.splitext(uploaded_file.name)[1]
-    file_name = f"{quote_id}_{uploaded_file.name}"
-    file_path = os.path.join(folder, file_name)
-    
-    # 寫入檔案
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-        
-    return file_name
-
-def render_attachment_module(df):
-    """
-    渲染獨立的附件管理區塊。
-    功能：選擇報價 -> 上傳/檢視附件 (支援圖片與 PDF 預覽)
-    """
-    st.markdown("---")
-    st.subheader("📎 報價附件管理中心")
-    
-    # 1. 選擇器
-    col_sel1, col_sel2 = st.columns([1, 2])
-    
-    selected_quote_id = None
-    selected_quote_row = None
-    
-    with col_sel1:
-        # 篩選專案
-        all_projects = df['專案名稱'].unique().tolist()
-        selected_proj = st.selectbox("📂 選擇專案", ["請選擇..."] + all_projects, key="att_proj_select")
-        
-    with col_sel2:
-        if selected_proj != "請選擇...":
-            # 篩選該專案下的報價項目
-            proj_df = df[df['專案名稱'] == selected_proj]
-            # 建立選單標籤: ID - 項目 - 供應商
-            quote_options = {f"{row['ID']} - {row['專案項目']} ({row['供應商']})": row['ID'] for _, row in proj_df.iterrows()}
-            
-            selected_option = st.selectbox("📄 選擇報價項目", ["請選擇..."] + list(quote_options.keys()), key="att_item_select")
-            
-            if selected_option != "請選擇...":
-                selected_quote_id = quote_options[selected_option]
-                # 取得該列資料
-                # 這裡假設 ID 是唯一的，使用 .iloc[0]
-                selected_quote_row = df[df['ID'] == selected_quote_id].iloc[0]
-
-    # 2. 附件操作區
-    if selected_quote_id is not None and selected_quote_row is not None:
-        
-        col_upload, col_preview = st.columns([1, 1.5], gap="large")
-        
-        # 確保 '附件' 欄位存在，避免 KeyError
-        current_file = str(selected_quote_row.get('附件', '')).strip()
-        
-        with col_upload:
-            st.info(f"正在編輯 ID: **{selected_quote_id}** 的附件")
-            
-            # 顯示目前附件狀態
-            if current_file:
-                st.success(f"✅ 目前已有附件：`{current_file}`")
-                st.caption(f"檔案路徑: attachments/{current_file}")
-            else:
-                st.warning("目前無附件")
-                
-            # 上傳元件
-            uploaded_file = st.file_uploader("上傳新附件 (支援 JPG, PNG, PDF)", type=['png', 'jpg', 'jpeg', 'pdf'], key=f"uploader_{selected_quote_id}")
-            
-            if uploaded_file:
-                if st.button("💾 確認上傳並儲存", type="primary"):
-                    # 1. 存檔案
-                    saved_filename = save_uploaded_file(uploaded_file, selected_quote_id)
-                    
-                    if saved_filename:
-                        # 2. 更新 DataFrame
-                        # 找到主數據中的索引
-                        idx = st.session_state.data[st.session_state.data['ID'] == selected_quote_id].index[0]
-                        st.session_state.data.loc[idx, '附件'] = saved_filename
-                        st.session_state.data.loc[idx, '最後修改時間'] = datetime.now().strftime(DATETIME_FORMAT)
-                        
-                        # 3. 寫入 Google Sheets
-                        # 這裡需要用到 write_data_to_sheets，故假設它已存在於 Session State 或全域
-                        if 'write_data_to_sheets' in globals() and write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-                            st.toast(f"附件 {saved_filename} 上傳成功！")
-                            time.sleep(1) 
-                            st.rerun()
-                        else:
-                            st.error("❌ 寫入 Google Sheets 失敗，請檢查權限與連線。")
-                    else:
-                        st.error("❌ 檔案儲存失敗。")
-
-
-        with col_preview:
-            st.markdown("#### 👁️ 附件預覽")
-            if current_file:
-                file_path = os.path.join("attachments", current_file)
-                
-                if os.path.exists(file_path):
-                    # 判斷副檔名
-                    ext = os.path.splitext(current_file)[1].lower()
-                    
-                    if ext in ['.png', '.jpg', '.jpeg']:
-                        st.image(file_path, caption=current_file, use_column_width=True)
-                        
-                    elif ext == '.pdf':
-                        # PDF 預覽邏輯 (使用 base64嵌入 iframe)
-                        try:
-                            with open(file_path, "rb") as f:
-                                base64_pdf = base64.b64encode(f.read()).decode('utf-8')
-                            pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
-                            st.markdown(pdf_display, unsafe_allow_html=True)
-                        except Exception as e:
-                            st.error(f"PDF 預覽失敗: {e}")
-                    else:
-                        st.info("此檔案格式不支援頁面內預覽 (僅支援圖片/PDF)。")
-                        st.download_button(
-                            label=f"⬇️ 下載 {current_file}",
-                            data=open(file_path, "rb").read(),
-                            file_name=current_file,
-                            mime='application/octet-stream'
-                        )
-                else:
-                    st.error(f"❌ 找不到檔案：{current_file} (可能是在其他裝置上傳的，或檔案已遺失)")
-            else:
-                st.caption("請選擇項目並上傳附件以進行預覽。")
-
-# *--- 9. 附件管理模組 - 結束 ---*
-
-
-
 
 # ******************************
 # *--- 8. 程式入口點 ---*
@@ -1367,6 +1369,3 @@ def main():
         
 if __name__ == "__main__":
     main()
-
-
-
