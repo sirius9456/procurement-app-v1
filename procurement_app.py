@@ -151,13 +151,17 @@ def login_form():
 # ******************************
 
 
+
 @st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
 def load_data_from_sheets():
     """直接使用 gspread 讀取 Google Sheets 中的數據。"""
     
+    # 定義標準欄位結構
+    expected_cols = ['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '標記刪除']
+    
     if not SHEET_URL:
         st.info("❌ Google Sheets URL 尚未配置。使用空的數據結構。")
-        empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '標記刪除'])
+        empty_data = pd.DataFrame(columns=expected_cols)
         return empty_data, {}
 
     try:
@@ -174,6 +178,23 @@ def load_data_from_sheets():
         data_records = data_ws.get_all_records()
         data_df = pd.DataFrame(data_records)
 
+        # 【關鍵修正】如果讀取到的 DataFrame 是空的，或缺少欄位，強制補齊
+        if data_df.empty:
+            data_df = pd.DataFrame(columns=expected_cols)
+        else:
+            # 確保所有標準欄位都存在
+            for col in expected_cols:
+                if col not in data_df.columns:
+                    # 依據欄位類型給予預設值
+                    if col in ['選取', '標記刪除']:
+                        data_df[col] = False
+                    elif col in ['ID', '數量']:
+                        data_df[col] = 0
+                    elif col in ['單價', '總價']:
+                        data_df[col] = 0.0
+                    else:
+                        data_df[col] = ''
+
         # 數據類型轉換與處理 (使用更穩健的方式處理 astype)
         dtype_map = {
             'ID': 'Int64', 
@@ -188,12 +209,6 @@ def load_data_from_sheets():
 
         if valid_dtype_map:
             data_df = data_df.astype(valid_dtype_map, errors='ignore')
-
-        if '標記刪除' not in data_df.columns:
-            data_df['標記刪除'] = False
-            
-        if '最後修改時間' not in data_df.columns:
-            data_df['最後修改時間'] = ''
 
         # 【修正】將日期欄位轉換為 datetime 類型，以支援 DateColumn
         if '預計交貨日' in data_df.columns:
@@ -228,6 +243,7 @@ def load_data_from_sheets():
         st.error(f"❌ 數據載入失敗！請檢查 Sheets 分享權限、工作表名稱或憑證檔案。")
         st.code(f"錯誤訊息: {e}")
         
+        # 發生錯誤時回傳完整的空 DataFrame
         empty_data = pd.DataFrame(columns=['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '標記刪除'])
         st.session_state.data_load_failed = True
         return empty_data, {}
@@ -1188,6 +1204,7 @@ if __name__ == "__main__":
     main()
 # *--- 8. 程式進入點 - 結束 ---*
 # ******************************
+
 
 
 
