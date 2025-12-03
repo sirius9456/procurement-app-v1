@@ -7,50 +7,48 @@ import json
 import gspread
 import logging
 import time
-# 移除 Google Cloud Storage (GCS) 引入
-# from google.cloud import storage 
-
-# 確保 openpyxl 庫已安裝 (pip install openpyxl)
 
 # ******************************
-# *--- 0. 初始設定與環境變數 ---*
+# *--- 1. 全域設定與常數 ---*
 # ******************************
+
+
 
 # 配置 Streamlit 日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__) # 定義 logger
+logger = logging.getLogger(__name__)
 
-# --- 應用程式設定 ---
-APP_VERSION = "v2.1.8" # 更新版本號以標記模組化
-STATUS_OPTIONS = ["待採購", "已下單", "已收貨", "取消"]
-DATE_FORMAT = "%Y-%m-%d" # 日期格式
-DATETIME_FORMAT = "%Y-%m-%d %H:%M" # V2.1.6 時間戳格式
+# 版本號
+APP_VERSION = "V2.2.4 (Prod Deployment)"
 
-# --- Google Cloud Storage (GCS) 配置 (移除) ---
-# GCS_BUCKET_NAME = "procurement-attachments-bucket"
-# GCS_ATTACHMENT_FOLDER = "attachments"
+# 時間格式
+DATE_FORMAT = "%Y-%m-%d"
+DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-# --- 數據源配置 (安全與 Gspread 連線) ---
+# --- Google Sheets URL 設定 ---
+# 優先順序：1. 環境變數 (GCE) -> 2. Streamlit Secrets -> 3. 預設/硬編碼
 if "GCE_SHEET_URL" in os.environ:
     SHEET_URL = os.environ["GCE_SHEET_URL"]
-    try:
-        GSHEETS_CREDENTIALS = os.environ["GSHEETS_CREDENTIALS_PATH"] 
-    except KeyError:
-        logging.error("GCE_SHEET_URL is set, but GSHEETS_CREDENTIALS_PATH is missing.")
-        st.error("❌ 錯誤：在 GCE 環境中未找到 GSHEETS_CREDENTIALS_PATH 環境變數。")
-        GSHEETS_CREDENTIALS = None 
 else:
-    # 備用邏輯，本地或 Streamlit Cloud 使用
     try:
-        SHEET_URL = st.secrets["app_config"]["sheet_url"]
-        GSHEETS_CREDENTIALS = None
-    except KeyError:
-        SHEET_URL = None
-        GSHEETS_CREDENTIALS = None
-        
-DATA_SHEET_NAME = "採購總表"
-METADATA_SHEET_NAME = "專案設定"
+        SHEET_URL = st.secrets["spreadsheet"]["url"]
+    except:
+        SHEET_URL = "https://docs.google.com/spreadsheets/d/1g1Lg1k1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1/edit" # 請確保此處為您的實際 URL
 
+# 工作表名稱 (正式版)
+DATA_SHEET_NAME = '採購總表'
+METADATA_SHEET_NAME = '專案設定'
+
+# --- 憑證路徑設定 (智慧偵測) ---
+# 優先順序：1. 環境變數 -> 2. secrets 資料夾 -> 3. 根目錄 -> 4. 預設
+if "GSHEETS_CREDENTIALS_PATH" in os.environ:
+    GSHEETS_CREDENTIALS = os.environ["GSHEETS_CREDENTIALS_PATH"]
+elif os.path.exists("secrets/google_sheets_credentials.json"):
+    GSHEETS_CREDENTIALS = "secrets/google_sheets_credentials.json"
+elif os.path.exists("google_sheets_credentials.json"):
+    GSHEETS_CREDENTIALS = "google_sheets_credentials.json"
+else:
+    GSHEETS_CREDENTIALS = "secrets/google_sheets_credentials.json" # 預設值
 
 st.set_page_config(
     page_title=f"專案採購小幫手 {APP_VERSION}", 
@@ -59,46 +57,77 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS 樣式修正 ---
+# CSS 樣式
 CUSTOM_CSS = """
 <style>
-    /* 強制指定中文字型，解決部分環境標題亂碼問題 */
+    /* 強制指定中文字型 */
     html, body, [class*="css"] {
         font-family: "Microsoft JhengHei", "Noto Sans TC", "PingFang TC", sans-serif;
     }
 
-    /* 確保 Streamlit 內建標題顯示正確 */
-    .st-emotion-cache-18ni7ap.e1nzilvr1 { 
-        font-family: "Microsoft JhengHei", "Noto Sans TC", "PingFang TC", sans-serif !important;
+    /* 儀表板樣式 */
+    .metric-box {
+        padding: 15px;
+        border-radius: 8px;
+        text-align: center;
+        color: white;
+        margin-bottom: 10px;
+    }
+    .metric-title {
+        font-size: 14px;
+        opacity: 0.8;
+    }
+    .metric-value {
+        font-size: 24px;
+        font-weight: bold;
     }
     
-    .streamlit-expanderContent { padding-left: 1rem !important; padding-right: 1rem !important; padding-bottom: 1rem !important; }
+    /* 專案標題樣式 */
+    .project-header {
+        font-size: 18px;
+        font-weight: bold;
+        color: #4CAF50;
+    }
+    .item-header {
+        font-size: 16px;
+        font-weight: 600;
+        color: #2196F3;
+        margin-left: 10px;
+    }
+    .meta-info {
+        font-size: 13px;
+        color: #888;
+    }
     
-    /* 專案標題樣式 (保持 V2.1.6 基礎) */
-    .project-header { font-size: 20px !important; font-weight: bold !important; color: #FAFAFA; }
-    .item-header { font-size: 16px !important; font-weight: 600 !important; color: #E0E0E0; }
-    .meta-info { font-size: 14px !important; color: #9E9E9E; font-weight: normal; }
+    /* 輸入欄位顏色統一 (適配深色模式) */
+    div[data-baseweb="select"] > div, div[data-baseweb="base-input"] > input, div[data-baseweb="input"] > div { 
+        background-color: #262730 !important; 
+        color: white !important; 
+        -webkit-text-fill-color: white !important; 
+    }
     
-    /* 輸入欄位顏色統一 */
-    div[data-baseweb="select"] > div, div[data-baseweb="base-input"] > input, div[data-baseweb="input"] > div { background-color: #262730 !important; color: white !important; -webkit-text-fill-color: white !important; }
-    div[data-baseweb="popover"], div[data-baseweb="menu"] { background-color: #262730 !important; }
-    div[data-baseweb="option"] { color: white !important; }
-    li[aria-selected="true"] { background-color: #FF4B4B !important; color: white !important; }
+    /* --- 日曆圖示修正 (強制白色) --- */
+    /* 1. 針對 Streamlit 表格內的日期選擇器 */
+    [data-testid="stDataFrame"] input[type="date"]::-webkit-calendar-picker-indicator {
+        filter: invert(1) grayscale(100%) brightness(200%) !important;
+        cursor: pointer;
+    }
     
-    /* 儀表板卡片樣式 */
-    .metric-box { padding: 10px 15px; border-radius: 8px; margin-bottom: 10px; text-align: center; }
-    .metric-title { font-size: 14px; color: #9E9E9E; margin-bottom: 5px; }
-    .metric-value { font-size: 24px; font-weight: bold; }
-
-    /* 移除 GCS 預覽 Modal 樣式 */
+    /* 2. 針對一般的 date input (如側邊欄) */
+    input[type="date"]::-webkit-calendar-picker-indicator {
+        filter: invert(1) grayscale(100%) brightness(200%) !important;
+        cursor: pointer;
+    }
 </style>
 """
-# *--- 0. 初始設定與環境變數 ---*
-# ******************************
+
+STATUS_OPTIONS = ["詢價中", "已報價", "待採購", "已採購", "運送中", "已到貨", "已驗收", "取消"]
+
+# *--- 1. 全域設定與常數 - 結束 ---*
 
 
 # ******************************
-# *--- 1. 登入與安全函式 ---*
+# *--- 1. 登入與安全函式 ---* (接續原本邏輯)
 # ******************************
 
 def logout():
@@ -144,17 +173,16 @@ def login_form():
 # ******************************
 
 
-
-
 # ******************************
 # *--- 2. 數據讀取與寫入函式 ---*
 # ******************************
 
+# 【修改：移除測試專用變數，直接使用 DATA_SHEET_NAME/METADATA_SHEET_NAME】
 
-# 【注意】快取功能保持關閉，以解決重新整理後資料消失的問題，確保數據即時性
+# 【修改】暫時註解掉快取功能，強制每次重整都讀取最新資料
 # @st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
 def load_data_from_sheets():
-    """直接使用 gspread 讀取 Google Sheets 中的數據。"""
+    """直接使用 gspread 讀取 Google Sheets 中的數據 (正式版)。"""
     
     # 定義標準欄位結構
     expected_cols = ['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '標記刪除']
@@ -166,14 +194,17 @@ def load_data_from_sheets():
 
     try:
         # --- 1. 授權與認證 ---
+        # 檢查憑證是否存在 (使用全域變數 GSHEETS_CREDENTIALS，它已經經過智慧偵測)
         if not GSHEETS_CREDENTIALS or not os.path.exists(GSHEETS_CREDENTIALS):
-             st.error(f"❌ 憑證錯誤：找不到憑證檔案 {GSHEETS_CREDENTIALS}")
+             st.error(f"❌ 憑證錯誤：找不到憑證檔案。路徑: {GSHEETS_CREDENTIALS}")
+             st.info("💡 提示：請確認 'google_sheets_credentials.json' 是否在根目錄、secrets 資料夾，或已設定環境變數。")
              raise FileNotFoundError("憑證檔案不存在或路徑錯誤")
             
         gc = gspread.service_account(filename=GSHEETS_CREDENTIALS)
         sh = gc.open_by_url(SHEET_URL)
         
         # --- 2. 讀取採購總表 (Data) ---
+        # 【修改：讀取正式分頁】
         try:
             data_ws = sh.worksheet(DATA_SHEET_NAME)
         except gspread.exceptions.WorksheetNotFound:
@@ -184,7 +215,7 @@ def load_data_from_sheets():
         data_records = data_ws.get_all_records()
         data_df = pd.DataFrame(data_records)
 
-        # 強制補齊欄位 (包含新欄位 '最後修改時間')
+        # 強制補齊欄位
         if data_df.empty:
             data_df = pd.DataFrame(columns=expected_cols)
         else:
@@ -214,6 +245,7 @@ def load_data_from_sheets():
             data_df['採購最慢到貨日'] = pd.to_datetime(data_df['採購最慢到貨日'], errors='coerce', format=DATE_FORMAT) 
         
         # --- 3. 讀取專案設定 (Metadata) ---
+        # 【修改：讀取正式分頁】
         try:
             metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
         except gspread.exceptions.WorksheetNotFound:
@@ -237,6 +269,7 @@ def load_data_from_sheets():
                     'last_modified': str(row.get('最後修改', ''))
                 }
 
+        st.success(f"✅ 數據已從 `{DATA_SHEET_NAME}` 及 `{METADATA_SHEET_NAME}` 載入！") # 更新成功訊息
         return data_df, project_metadata
 
     except Exception as e:
@@ -270,7 +303,7 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         df_export = df_export.fillna("")
         df_export = df_export.astype(object) 
                 
-        # 寫入正式分頁
+        # 【修改：寫入正式分頁】
         try:
             data_ws = sh.worksheet(DATA_SHEET_NAME)
         except gspread.exceptions.WorksheetNotFound:
@@ -291,7 +324,7 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         ]
         metadata_df = pd.DataFrame(metadata_list)
         
-        # 寫入正式設定
+        # 【修改：寫入正式設定分頁】
         try:
             metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
         except gspread.exceptions.WorksheetNotFound:
@@ -314,8 +347,8 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
 
 
 
-# *--- 2. 數據讀取與寫入函式 - 結束 ---*
 
+# *--- 2. 數據讀取與寫入函式 - 結束 ---*
 
 
 # ******************************
@@ -721,9 +754,6 @@ def handle_add_new_quote(latest_arrival_date):
 
 # *--- 4. 邏輯處理函式 - 結束 ---*
 
-# *--- 4. 邏輯處理函式 ---*
-# ******************************
-
 
 # ******************************
 # *--- 5. Session State 初始化函式 ---*
@@ -752,11 +782,6 @@ def initialize_session_state():
 # ******************************
 
 
-
-# ******************************
-# *--- 6. 模組化渲染函數 ---*
-# ******************************
-
 # ******************************
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
@@ -767,7 +792,6 @@ def render_sidebar_ui(df, project_metadata, today):
     with st.sidebar:
         
         # --- 區塊 1: 修改/刪除專案 ---
-        # *--- render_sidebar_ui - 區塊 1: 修改/刪除專案 ---*
         with st.expander("✏️ 修改/刪除專案資訊", expanded=False): 
             all_projects = sorted(list(project_metadata.keys()))
             
@@ -799,13 +823,10 @@ def render_sidebar_ui(df, project_metadata, today):
                         
             else: 
                 st.info("無專案可修改/刪除。請在下方新增專案。")
-        # *--- render_sidebar_ui - 區塊 1: 修改/刪除專案 - 結束 ---*
         
         
         # --- 區塊 2: 新增/設定專案時程 ---
-        # *--- render_sidebar_ui - 區塊 2: 新增/設定專案時程 ---*
         with st.expander("➕ 新增/設定專案時程", expanded=False): 
-            # 【新增】提示訊息
             st.info("💡 若輸入現有專案名稱，將更新該專案的交貨日與緩衝天數。")
             
             st.text_input("專案名稱 (Project Name)", key="new_proj_name")
@@ -818,11 +839,9 @@ def render_sidebar_ui(df, project_metadata, today):
 
             if st.button("💾 儲存專案設定", key="btn_save_proj", use_container_width=True):
                 handle_add_new_project()
-        # *--- render_sidebar_ui - 區塊 2: 新增/設定專案時程 - 結束 ---*
         
         
         # --- 區塊 3: 新增報價 ---
-        # *--- render_sidebar_ui - 區塊 3: 新增報價 ---*
         with st.expander("➕ 新增報價", expanded=False): 
             all_projects_for_quote = sorted(list(project_metadata.keys()))
             latest_arrival_date = today 
@@ -885,12 +904,10 @@ def render_sidebar_ui(df, project_metadata, today):
             
             if st.button("📥 新增資料", key="btn_add_quote", type="primary", use_container_width=True):
                 handle_add_new_quote(latest_arrival_date)
-        # *--- render_sidebar_ui - 區塊 3: 新增報價 - 結束 ---*
 
 
         # 恢復 V2.1.6 原始登出按鈕位置
         st.button("🚪 登出系統", on_click=logout, type="secondary", key="sidebar_logout_btn")
-# *--- 6. 模組化渲染函數 - render_sidebar_ui - 結束 ---*
 
 
 def render_dashboard(df, project_metadata):
@@ -942,7 +959,6 @@ def render_dashboard(df, project_metadata):
 def render_batch_operations():
     """渲染儲存/刪除按鈕及確認對話框。"""
     
-    # *--- render_batch_operations - 批次操作區塊 ---*
     col_save, col_delete = st.columns([0.8, 0.2])
     
     is_locked = st.session_state.show_delete_confirm
@@ -971,13 +987,11 @@ def render_batch_operations():
                 st.rerun()
 
     st.markdown("---")
-    # *--- render_batch_operations - 批次操作區塊 - 結束 ---*
     
     
 def render_project_tables(df, project_metadata):
     """渲染主介面中所有專案的 Data Editor 表格。"""
     
-    # *--- render_project_tables - 專案表格區塊 ---*
     if df.empty:
         st.info("目前沒有採購報價資料。")
         return
@@ -1006,7 +1020,7 @@ def render_project_tables(df, project_metadata):
         latest_arrival_proj = due_date_val - timedelta(days=buffer_days_val)
         latest_arrival_str = latest_arrival_proj.strftime(DATE_FORMAT)
 
-        # 【修改】標題列移除專案最後修改時間 (last_modified)
+        # 標題列
         header_html = f"""
         <span class='project-header'>💼 專案: {proj_name}</span> &nbsp;|&nbsp; 
         <span class='project-header'>總預算: ${proj_budget:,.0f}</span> &nbsp;|&nbsp; 
@@ -1039,7 +1053,7 @@ def render_project_tables(df, project_metadata):
                     temp_series = pd.to_datetime(editable_df['預計交貨日'], errors='coerce')
                     editable_df['預計交貨日'] = temp_series.apply(lambda x: x.date() if pd.notnull(x) else None)
                 
-                # 確保採購最慢到貨日也是純 date 格式 (用於判定邏輯，雖然不顯示在表格)
+                # 確保採購最慢到貨日也是純 date 格式
                 if '採購最慢到貨日' in editable_df.columns:
                     temp_limit = pd.to_datetime(editable_df['採購最慢到貨日'], errors='coerce')
                     editable_df['採購最慢到貨日'] = temp_limit.apply(lambda x: x.date() if pd.notnull(x) else None)
@@ -1048,10 +1062,9 @@ def render_project_tables(df, project_metadata):
                 if '最後修改時間' not in editable_df.columns:
                     editable_df['最後修改時間'] = ''
 
-
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                # 【表格欄位調整】欄位顯示順序：新增 '最後修改時間'
+                # 【表格欄位調整】欄位顯示順序
                 cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '標記刪除']
 
                 # 使用 column_order 來控制顯示
@@ -1108,18 +1121,13 @@ def render_project_tables(df, project_metadata):
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
-
-# *--- 6. 模組化渲染函數 - render_project_tables - 結束 ---*
-
 # ******************************
 # *--- 7. 主應用程式核心邏輯 ---*
 # ******************************
 
-
 def run_app():
     """運行應用程式的核心邏輯，在成功登入後調用。"""
     
-    # 修正: 確保所有 Expander 狀態都被追蹤
     if 'expander_states' not in st.session_state:
         st.session_state.expander_states = {}
 
@@ -1138,7 +1146,7 @@ def run_app():
 
     initialize_session_state()
 
-    # 數據自動計算：在初始化後，計算最慢到貨日
+    # 數據自動計算
     st.session_state.data = calculate_latest_arrival_dates(
         st.session_state.data, 
         st.session_state.project_metadata
@@ -1152,27 +1160,25 @@ def run_app():
     # 【判定邏輯更新】
     def get_date_judgment_icon(row):
         try:
-            # 確保轉為 datetime
             d_val = pd.to_datetime(row['預計交貨日'])
             l_val = pd.to_datetime(row['採購最慢到貨日'])
             
             if pd.isna(d_val) or pd.isna(l_val):
                 return ""
                 
-            # 比較日期部分
             # 若 預計交貨日 > 最慢到貨日 -> 延遲 (❌)
             if d_val.date() > l_val.date():
-                return "❌" # 延遲
+                return "❌" 
             else:
-                return "✅" # 準時 (含當天)
+                return "✅" 
         except:
             return ""
 
     if not st.session_state.data.empty:
-        # 建立一個新欄位 '交期判定'，專門存放圖示
+        # 建立 '交期判定'
         st.session_state.data['交期判定'] = st.session_state.data.apply(get_date_judgment_icon, axis=1)
         
-        # 【新增】確保 '最後修改時間' 欄位存在，若不存在則初始化
+        # 確保 '最後修改時間' 欄位存在
         if '最後修改時間' not in st.session_state.data.columns:
             st.session_state.data['最後修改時間'] = ''
 
@@ -1186,17 +1192,11 @@ def run_app():
     render_batch_operations()
     render_project_tables(df, project_metadata) 
 
+# ******************************
+# *--- 8. 程式入口點 ---*
+# ******************************
 
-# *--- 7. 主應用程式核心邏輯 - 結束 ---*
-
-
-
-# --- 程式進入點 ---
 def main():
-    
-    # ******************************
-    # *--- 8. 程式進入點 ---*
-    # ******************************
     
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True) 
         
@@ -1207,5 +1207,3 @@ def main():
         
 if __name__ == "__main__":
     main()
-# *--- 8. 程式進入點 - 結束 ---*
-# ******************************
