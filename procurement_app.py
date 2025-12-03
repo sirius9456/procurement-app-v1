@@ -1247,7 +1247,7 @@ def render_project_tables(df, project_metadata):
                         "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
                         
                         # 【修正點 4】新增 '附件' 欄位配置
-                        "附件": st.column_config.TextColumn("附件檔名", disabled=True, width="medium", help="關聯的附件檔名，請在底部附件管理區操作"),
+                        "附件": st.column_config.TextColumn("附件", disabled=True, width="medium", help="關聯的附件檔名，請在底部附件管理區操作"),
                         
                         # 【新欄位配置】
                         "最後修改時間": st.column_config.TextColumn(
@@ -1369,3 +1369,4 @@ def main():
         
 if __name__ == "__main__":
     main()
+
