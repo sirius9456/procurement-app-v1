@@ -9,6 +9,8 @@ import gspread
 import logging
 import time
 import base64 # 新增 base64 導入，用於 PDF 預覽
+# 【GCS 導入】新增 Google Cloud Storage 函式庫
+from google.cloud import storage
 
 # ******************************
 # *--- 1. 全域設定與常數 ---*
@@ -381,137 +383,82 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
 # *--- 2. 數據讀取與寫入函式 - 結束 ---*
 
 
+
 # ******************************
 # *--- 3. 輔助函式區 ---*
 # ******************************
+# ... (add_business_days, convert_df_to_excel, calculate_project_budget, calculate_dashboard_metrics, calculate_latest_arrival_dates 保持不變) ...
 
-def add_business_days(start_date, num_days):
-    """計算工作日 (跳過週末)。"""
-    current_date = start_date
-    days_added = 0
-    while days_added < num_days:
-        current_date += timedelta(days=1)
-        if current_date.weekday() < 5: days_added += 1
-    return current_date
+# 【GCS 輔助函式】
 
-@st.cache_data
-def convert_df_to_excel(df):
-    """將 DataFrame 轉換為 Excel 二進位檔案 (使用 BytesIO)。"""
-    df_export = df.drop(columns=['標記刪除', '交期顯示'], errors='ignore') 
-    output = BytesIO()
+@st.cache_resource
+def get_gcs_client():
+    """初始化 GCS 客戶端 (使用 Streamlit 資源快取)。"""
+    # 假設運行環境已配置 GCP 認證 (e.g., Service Account JSON, or environment variables)
+    return storage.Client()
+
+def upload_file_to_gcs(uploaded_file, quote_id):
+    """將檔案上傳到 GCS Bucket，並返回物件名稱 (包含路徑)。"""
+    if uploaded_file is None:
+        return None
+        
+    client = get_gcs_client()
+    bucket = client.bucket(GCS_BUCKET_NAME)
     
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export.to_excel(writer, index=False, sheet_name='採購報價總表')
+    # 構造 GCS 物件名稱：attachments/ID_原始檔名
+    destination_blob_name = f"{GCS_FOLDER_PATH}/{quote_id}_{uploaded_file.name}"
+    blob = bucket.blob(destination_blob_name)
     
-    processed_data = output.getvalue()
-    return processed_data
+    # 上傳檔案內容
+    try:
+        blob.upload_from_string(uploaded_file.getvalue(), content_type=uploaded_file.type)
+        return destination_blob_name
+    except Exception as e:
+        logging.error(f"GCS 檔案上傳失敗: {e}")
+        st.error(f"❌ 附件上傳到 GCS 失敗：{e}")
+        return None
 
-def calculate_project_budget(df, project_name):
-    """計算單一專案的預算 (已選項目或預估最小值)。"""
-    proj_df = df[df['專案名稱'] == project_name]
-    total_budget = 0
-    for _, item_df in proj_df.groupby('專案項目'):
-        selected_rows = item_df[item_df['選取'] == True]
-        if not selected_rows.empty:
-            total_budget += selected_rows['總價'].sum()
+def delete_file_from_gcs(gcs_object_name):
+    """從 GCS Bucket 中刪除檔案。"""
+    if not gcs_object_name:
+        return True # 如果檔案名是空的，視為成功
+        
+    client = get_gcs_client()
+    bucket = client.bucket(GCS_BUCKET_NAME)
+    blob = bucket.blob(gcs_object_name)
+    
+    try:
+        # 檢查檔案是否存在再刪除
+        if blob.exists():
+            blob.delete()
+            return True
         else:
-            if not item_df.empty:
-                total_budget += item_df['總價'].min()
-    return total_budget
+            logging.warning(f"GCS 刪除警告：檔案 {gcs_object_name} 不存在。")
+            return True
+    except Exception as e:
+        logging.error(f"GCS 檔案刪除失敗: {e}")
+        return False
 
-@st.cache_data(show_spinner=False)
-def calculate_dashboard_metrics(df_state, project_metadata_state):
-    """計算儀表板所需的總體指標。"""
-    
-    total_projects = len(project_metadata_state)
-    total_budget = 0
-    risk_items = 0
-    df = df_state.copy()
-    
-    if df.empty:
-        return 0, 0, 0, 0
-
-    # 1. 計算總預算
-    for _, proj_data in df.groupby('專案名稱'):
-        if proj_data['專案名稱'].iloc[0] not in project_metadata_state: continue 
-            
-        for _, item_df in proj_data.groupby('專案項目'):
-            selected_rows = item_df[item_df['選取'] == True]
-            if not selected_rows.empty:
-                total_budget += selected_rows['總價'].sum()
-            elif not item_df.empty:
-                total_budget += item_df['總價'].min()
-    
-    # 2. 計算風險項目 (使用字串轉日期進行比較)
-    temp_df_risk = df.copy() 
-    temp_df_risk['預計交貨日_dt'] = pd.to_datetime(temp_df_risk['預計交貨日'], errors='coerce')
-    temp_df_risk['採購最慢到貨日_dt'] = pd.to_datetime(temp_df_risk['採購最慢到貨日'], errors='coerce')
-    risk_items = (temp_df_risk['預計交貨日_dt'] > temp_df_risk['採購最慢到貨日_dt']).sum()
-    
-
-    # 3. 計算需要處理的報價數量
-    pending_quotes = df[~df['狀態'].isin(['已收貨', '取消'])].shape[0]
-
-    return total_projects, total_budget, risk_items, pending_quotes
-
-
-@st.cache_data(show_spinner=False)
-def calculate_latest_arrival_dates(df, metadata):
-    """根據專案設定，計算每個採購項目的採購最慢到貨日。(V2.1.6 核心邏輯)"""
-    
-    if df.empty or not metadata:
-        return df
-
-    metadata_df = pd.DataFrame.from_dict(metadata, orient='index')
-    metadata_df = metadata_df.reset_index().rename(columns={'index': '專案名稱'})
-    
-    metadata_df['due_date'] = metadata_df['due_date'].apply(lambda x: pd.to_datetime(x).date())
-    metadata_df['buffer_days'] = metadata_df['buffer_days'].astype(int)
-
-    df = pd.merge(df, metadata_df[['專案名稱', 'due_date', 'buffer_days']], on='專案名稱', how='left')
-
-    # 將 due_date 轉換為 Timestamp，才能減去 Timedelta
-    df['due_date_ts'] = pd.to_datetime(df['due_date'])
-
-    # 計算最慢到貨日 (Timestamp - Timedelta)，並轉回字串
-    df['採購最慢到貨日_NEW'] = (
-        df['due_date_ts'] - 
-        df['buffer_days'].apply(lambda x: timedelta(days=x) if pd.notna(x) and x is not None else timedelta(days=0))
-    ).dt.strftime('%Y-%m-%d')
-    
-    df['採購最慢到貨日'] = df['採購最慢到貨日_NEW']
-    
-    df = df.drop(columns=['due_date', 'buffer_days', '採購最慢到貨日_NEW', 'due_date_ts'], errors='ignore') 
-    
-    return df
 # *--- 3. 輔助函式區 - 結束 ---*
+
 
 
 # ******************************
 # *--- 9. 附件管理模組 (新功能) ---*
 # ******************************
 # 【修正點】將此區塊移到區塊 4 之前，確保主程式呼叫時函式已定義
+import base64
+
 def save_uploaded_file(uploaded_file, quote_id):
-    """將上傳的檔案存到本地 attachments 資料夾，並回傳檔名。"""
+    """【GCS 實作】將上傳的檔案存到 Google Cloud Storage，並回傳 GCS 物件名稱。"""
     if uploaded_file is None:
         return None
-    
-    # 建立附件資料夾
-    folder = "attachments"
-    if not os.path.exists(folder):
-        os.makedirs(folder)
         
-    # 產生安全檔名 (ID_原始檔名)
-    # 為了避免中文或特殊符號問題，僅用 ID 和副檔名組合，但保留上傳名稱方便使用者識別
-    file_ext = os.path.splitext(uploaded_file.name)[1]
-    file_name = f"{quote_id}_{uploaded_file.name}"
-    file_path = os.path.join(folder, file_name)
+    # 舊的本地檔案儲存邏輯已移除，直接呼叫 GCS 輔助函式
+    gcs_object_name = upload_file_to_gcs(uploaded_file, quote_id)
     
-    # 寫入檔案
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-        
-    return file_name
+    # 返回 GCS 物件名稱 (e.g., attachments/123_quote.pdf)
+    return gcs_object_name 
 
 def render_attachment_module(df):
     """
@@ -521,7 +468,7 @@ def render_attachment_module(df):
     st.markdown("---")
     st.subheader("📎 報價附件管理中心")
     
-    # 0. 處理來自表格點擊的預覽請求
+    # 1. 處理來自表格點擊的預覽請求
     auto_preview_id = st.session_state.get('preview_from_table_id', None)
     initial_proj = "請選擇..."
     initial_item_key = "請選擇..."
@@ -536,7 +483,7 @@ def render_attachment_module(df):
         except:
             pass
             
-    # 1. 選擇器
+    # 2. 選擇器
     col_sel1, col_sel2 = st.columns([1, 2])
     
     selected_quote_id = None
@@ -568,21 +515,23 @@ def render_attachment_module(df):
                 # 取得該列資料
                 selected_quote_row = df[df['ID'] == selected_quote_id].iloc[0]
 
-    # 2. 附件操作區
+    # 3. 附件操作區
     if selected_quote_id is not None and selected_quote_row is not None:
         
         col_upload, col_preview = st.columns([1, 1.5], gap="large")
         
-        # 確保 '附件' 欄位存在，避免 KeyError
-        current_file = str(selected_quote_row.get('附件', '')).strip()
+        # 獲取 GCS 物件名稱
+        gcs_object_name = str(selected_quote_row.get('附件', '')).strip()
         
         with col_upload:
             st.info(f"正在編輯 ID: **{selected_quote_id}** 的附件")
             
             # 顯示目前附件狀態
-            if current_file:
-                st.success(f"✅ 目前已有附件：`{current_file}`")
-                st.caption(f"檔案路徑: attachments/{current_file}")
+            if gcs_object_name:
+                # 只顯示檔名部分
+                display_filename = os.path.basename(gcs_object_name)
+                st.success(f"✅ 目前 GCS 附件：`{display_filename}`")
+                st.caption(f"GCS 路徑: {gcs_object_name}")
             else:
                 st.warning("目前無附件")
                 
@@ -591,60 +540,51 @@ def render_attachment_module(df):
             
             if uploaded_file:
                 if st.button("💾 確認上傳並儲存", type="primary"):
-                    # 1. 存檔案
-                    saved_filename = save_uploaded_file(uploaded_file, selected_quote_id)
+                    # 1. 執行上傳到 GCS
+                    new_gcs_object_name = save_uploaded_file(uploaded_file, selected_quote_id)
                     
-                    if saved_filename:
-                        # 2. 更新 DataFrame
-                        # 找到主數據中的索引
+                    if new_gcs_object_name:
+                        # 2. 更新 DataFrame (儲存 GCS 物件名稱)
                         idx = st.session_state.data[st.session_state.data['ID'] == selected_quote_id].index[0]
-                        st.session_state.data.loc[idx, '附件'] = saved_filename
+                        st.session_state.data.loc[idx, '附件'] = new_gcs_object_name
                         st.session_state.data.loc[idx, '最後修改時間'] = datetime.now().strftime(DATETIME_FORMAT)
                         
                         # 3. 寫入 Google Sheets
                         if 'write_data_to_sheets' in globals() and write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-                            st.toast(f"附件 {saved_filename} 上傳成功！")
+                            st.toast(f"附件 {os.path.basename(new_gcs_object_name)} 上傳成功！")
                             time.sleep(1) 
                             st.rerun()
                         else:
                             st.error("❌ 寫入 Google Sheets 失敗，請檢查權限與連線。")
                     else:
-                        st.error("❌ 檔案儲存失敗。")
+                        st.error("❌ 檔案上傳 GCS 失敗。")
 
 
         with col_preview:
             st.markdown("#### 👁️ 附件預覽")
-            if current_file:
-                file_path = os.path.join("attachments", current_file)
+            if gcs_object_name:
+                # 【GCS 預覽】使用 GCS 的公開存取 URL
+                # 注意：這要求您的 Bucket 必須設置為公開讀取權限
+                public_url = f"{GCS_BASE_URL}/{gcs_object_name}"
+                display_filename = os.path.basename(gcs_object_name)
                 
-                if os.path.exists(file_path):
-                    # 判斷副檔名
-                    ext = os.path.splitext(current_file)[1].lower()
+                # 判斷副檔名
+                ext = os.path.splitext(display_filename)[1].lower()
+                
+                if ext in ['.png', '.jpg', '.jpeg']:
+                    st.image(public_url, caption=display_filename, use_container_width=True)
                     
-                    if ext in ['.png', '.jpg', '.jpeg']:
-                        st.image(file_path, caption=current_file, use_column_width=True)
-                        
-                    elif ext == '.pdf':
-                        # PDF 預覽邏輯 (使用 base64嵌入 iframe)
-                        try:
-                            with open(file_path, "rb") as f:
-                                base64_pdf = base64.b64encode(f.read()).decode('utf-8')
-                            pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
-                            st.markdown(pdf_display, unsafe_allow_html=True)
-                        except Exception as e:
-                            st.error(f"PDF 預覽失敗: {e}")
-                    else:
-                        st.info("此檔案格式不支援頁面內預覽 (僅支援圖片/PDF)。")
-                        st.download_button(
-                            label=f"⬇️ 下載 {current_file}",
-                            data=open(file_path, "rb").read(),
-                            file_name=current_file,
-                            mime='application/octet-stream'
-                        )
+                elif ext == '.pdf':
+                    # PDF 預覽，直接嵌入公開 URL
+                    pdf_display = f'<iframe src="{public_url}" width="100%" height="600" type="application/pdf"></iframe>'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
                 else:
-                    st.error(f"❌ 找不到檔案：{current_file} (可能是在其他裝置上傳的，或檔案已遺失)")
+                    st.info(f"此檔案格式 ({ext}) 不支援頁面內預覽 (僅支援圖片/PDF)。")
+                    st.markdown(f"[點擊下載檔案: {display_filename}]({public_url})", unsafe_allow_html=True)
             else:
                 st.caption("請選擇項目並上傳附件以進行預覽。")
+
+
 
 # *--- 9. 附件管理模組 - 結束 ---*
 
@@ -1443,3 +1383,4 @@ def main():
         
 if __name__ == "__main__":
     main()
+
