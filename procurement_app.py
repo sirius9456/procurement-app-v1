@@ -7,6 +7,7 @@ import json
 import gspread
 import logging
 import time
+import base64 # 新增 base64 導入，用於 PDF 預覽
 
 # ******************************
 # *--- 1. 全域設定與常數 ---*
@@ -17,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # 版本號
-APP_VERSION = "V2.2.3 (Auth Fix)"
+APP_VERSION = "V2.2.7 (Integrate Attachment Module)"
 
 # 時間格式
 DATE_FORMAT = "%Y-%m-%d"
@@ -33,9 +34,9 @@ else:
     except:
         SHEET_URL = "https://docs.google.com/spreadsheets/d/1g1Lg1k1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1/edit" # 請確保此處為您的實際 URL
 
-# 工作表名稱
-DATA_SHEET_NAME = '採購總表'
-METADATA_SHEET_NAME = '專案設定'
+# 工作表名稱 (測試版專用)
+DATA_SHEET_NAME = '採購總表_測試'
+METADATA_SHEET_NAME = '專案設定_測試'
 
 # --- 憑證路徑設定 (智慧偵測) ---
 # 優先順序：1. 環境變數 -> 2. secrets 資料夾 -> 3. 根目錄 -> 4. 預設
@@ -50,7 +51,7 @@ else:
 
 st.set_page_config(
     page_title=f"專案採購小幫手 {APP_VERSION}", 
-    page_icon="🛠️", 
+    page_icon="🧪", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -84,7 +85,7 @@ CUSTOM_CSS = """
     .project-header {
         font-size: 18px;
         font-weight: bold;
-        color: #4CAF50;
+        color: #FF9800;
     }
     .item-header {
         font-size: 16px;
@@ -125,7 +126,7 @@ STATUS_OPTIONS = ["詢價中", "已報價", "待採購", "已採購", "運送中
 
 
 # ******************************
-# *--- 1. 登入與安全函式 ---* (接續原本邏輯)
+# *--- 1. 登入與安全函式 ---*
 # ******************************
 
 def logout():
@@ -152,7 +153,7 @@ def login_form():
     
     with col_center:
         with st.container(border=True):
-            st.title("🔐 請登入以繼續")
+            st.title("🧪 測試版登入 (Test Env)")
             st.markdown("---")
             
             username = st.text_input("用戶名", key="login_username", value=credentials["username"], disabled=True)
@@ -161,27 +162,22 @@ def login_form():
             if st.button("登入", type="primary"):
                 if username.strip() == credentials["username"].strip() and password == credentials["password"]:
                     st.session_state["authenticated"] = True
-                    st.toast("✅ 登入成功！")
+                    st.toast("✅ 測試版登入成功！")
                     st.rerun()
                 else:
                     st.error("用戶名或密碼錯誤。")
             
     st.stop() 
-# *--- 1. 登入與安全函式 ---*
-# ******************************
 
 
 # ******************************
-# *--- 2. 數據讀取與寫入函式 ---*
+# *--- 2. 數據讀取與寫入函式 (測試版) ---*
 # ******************************
-
-
 
 # 【設定】測試版專用的工作表名稱
 DATA_SHEET_NAME = '採購總表_測試' 
 METADATA_SHEET_NAME = '專案設定_測試'
 
-# 【修改】暫時註解掉快取功能，強制每次重整都讀取最新資料
 # @st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
 def load_data_from_sheets():
     """直接使用 gspread 讀取 Google Sheets 中的數據 (測試版)。"""
@@ -372,7 +368,6 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
         st.error(f"❌ 數據寫回 Google Sheets 失敗！")
         st.code(f"寫入錯誤訊息: {e}")
         return False
-
 # *--- 2. 數據讀取與寫入函式 - 結束 ---*
 
 
@@ -479,8 +474,7 @@ def calculate_latest_arrival_dates(df, metadata):
     df = df.drop(columns=['due_date', 'buffer_days', '採購最慢到貨日_NEW', 'due_date_ts'], errors='ignore') 
     
     return df
-# *--- 3. 輔助函式區 ---*
-# ******************************
+# *--- 3. 輔助函式區 - 結束 ---*
 
 
 # ******************************
@@ -548,17 +542,11 @@ def handle_master_save():
                 changes_detected = True
                 # 【新功能】更新單個報價的最後修改時間
                 main_df.loc[main_idx, '最後修改時間'] = current_time_str
-                # proj = main_df.loc[main_idx, '專案名稱'] # 不再需要
-                # affected_projects.add(proj) # 不再需要
                 
     if changes_detected:
         st.session_state.data = main_df
         
         updated_metadata = st.session_state.project_metadata.copy()
-        # 【移除】不再更新專案的 last_modified 欄位
-        # for proj in affected_projects:
-        #     if proj in updated_metadata:
-        #         updated_metadata[proj]['last_modified'] = current_time_str 
         
         if write_data_to_sheets(st.session_state.data, updated_metadata):
             st.session_state.project_metadata = updated_metadata
@@ -655,7 +643,6 @@ def handle_project_modification():
     """處理修改專案設定的邏輯"""
     target_proj = st.session_state.edit_target_project
     new_name = st.session_state.edit_new_name
-    # new_date = st.session_state.edit_new_date # 移除編輯日期
     current_time_str = datetime.now().strftime(DATETIME_FORMAT)
     
     if not new_name:
@@ -667,8 +654,6 @@ def handle_project_modification():
         return
 
     meta = st.session_state.project_metadata.pop(target_proj)
-    # meta['due_date'] = new_date # 移除編輯日期
-    # meta['last_modified'] = current_time_str # 【移除】不再更新專案的 last_modified
     st.session_state.project_metadata[new_name] = meta
     
     st.session_state.data.loc[st.session_state.data['專案名稱'] == target_proj, '專案名稱'] = new_name
@@ -754,8 +739,6 @@ def handle_add_new_quote(latest_arrival_date):
         
     total_price = price * qty
     
-    # st.session_state.project_metadata[project_name]['last_modified'] = current_time_str # 【移除】不再更新專案的 last_modified
-
     new_row = {
         'ID': st.session_state.next_id, '選取': False, '專案名稱': project_name, 
         '專案項目': item_name_to_use, '供應商': supplier, '單價': price, '數量': qty, 
@@ -768,6 +751,7 @@ def handle_add_new_quote(latest_arrival_date):
         '標記刪除': False,
         # 【新功能】新增報價的最後修改時間
         '最後修改時間': current_time_str, 
+        '附件': "" # 新增的附件欄位，預設為空字串
     }
     st.session_state.next_id += 1
     st.session_state.data = pd.concat([st.session_state.data, pd.DataFrame([new_row])], ignore_index=True)
@@ -803,8 +787,7 @@ def initialize_session_state():
     if 'calculated_delivery_date' not in st.session_state: st.session_state.calculated_delivery_date = today
     if 'show_delete_confirm' not in st.session_state: st.session_state.show_delete_confirm = False
     if 'delete_count' not in st.session_state: st.session_state.delete_count = 0
-# *--- 5. Session State 初始化函式 ---*
-# ******************************
+# *--- 5. Session State 初始化函式 - 結束 ---*
 
 
 # ******************************
@@ -1146,6 +1129,9 @@ def render_project_tables(df, project_metadata):
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
+# *--- 6. 模組化渲染函數 - 結束 ---*
+
+
 # ******************************
 # *--- 7. 主應用程式核心邏輯 ---*
 # ******************************
@@ -1216,9 +1202,26 @@ def run_app():
     render_dashboard(df, project_metadata)
     render_batch_operations()
     render_project_tables(df, project_metadata) 
-
+    
     # 【新增】呼叫附件管理模組
     render_attachment_module(df)
+
+# ******************************
+# *--- 8. 程式入口點 ---*
+# ******************************
+
+def main():
+    
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True) 
+        
+    login_form()
+    
+    if st.session_state.authenticated:
+        run_app() 
+        
+if __name__ == "__main__":
+    main()
+
 
 # ******************************
 # *--- 9. 附件管理模組 (新功能) ---*
@@ -1361,26 +1364,3 @@ def render_attachment_module(df):
                 st.caption("請選擇項目並上傳附件以進行預覽。")
 
 # *--- 9. 附件管理模組 - 結束 ---*
-
-
-
-# ******************************
-# *--- 8. 程式入口點 ---*
-# ******************************
-
-def main():
-    
-    st.markdown(CUSTOM_CSS, unsafe_allow_html=True) 
-        
-    login_form()
-    
-    if st.session_state.authenticated:
-        run_app() 
-        
-if __name__ == "__main__":
-    main()
-
-
-
-
-
