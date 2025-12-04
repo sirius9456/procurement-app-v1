@@ -98,8 +98,8 @@ STATUS_OPTIONS = ["詢價中", "已報價", "待採購", "已採購", "運送中
 # ******************************
 
 
-# 初始化 Cookie 管理器 (使用 cache 避免重複重載)
-@st.cache_resource
+# 初始化 Cookie 管理器
+# ⚠️ 注意：不能使用 @st.cache_resource，因為 CookieManager 包含 UI 元件
 def get_cookie_manager():
     return stx.CookieManager()
 
@@ -126,7 +126,10 @@ def login_form():
 
     # 2. 檢查 Cookie 是否存在且有效 (自動登入)
     # 我們將 username 存入 cookie 簡單驗證
+    # 增加 time.sleep 確保 cookie manager 載入完成 (有時會有一點延遲)
+    time.sleep(0.1)
     auth_cookie = cookie_manager.get(COOKIE_NAME)
+    
     if auth_cookie == DEFAULT_USERNAME and not st.session_state["authenticated"]:
         st.session_state["authenticated"] = True
         # 這裡不使用 rerun，避免無限迴圈，直接讓程式往下執行
@@ -855,6 +858,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
