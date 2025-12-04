@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # 版本號
-APP_VERSION = "V2.4.0 (UI Polish)" 
+APP_VERSION = "V2.4.1 (Fix Upload)" 
 
 # 時間格式
 DATE_FORMAT = "%Y-%m-%d"
@@ -150,7 +150,8 @@ def get_gcs_client_standard():
     """獲取標準 GCS Client (用於一般上傳/刪除)。"""
     return storage.Client()
 
-def upload_file_to_gcs(uploaded_file, quote_id):
+# 【修正】將函式名稱統一為 save_uploaded_file，解決 NameError
+def save_uploaded_file(uploaded_file, quote_id):
     """上傳檔案至 GCS。"""
     if uploaded_file is None: return None
     try:
