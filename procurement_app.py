@@ -1100,6 +1100,8 @@ def initialize_session_state():
 # *--- 6. 模組化渲染函數 ---*
 # ******************************
 
+
+
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
     
@@ -1315,20 +1317,21 @@ def render_project_tables(df, project_metadata):
     
     is_locked = st.session_state.show_delete_confirm
 
-    # 【新增功能：處理點擊事件】
-    # 檢查是否有來自表格的點擊，如果有，更新 Session State
-    # st.experimental_get_query_params 已棄用，改用 st.query_params
+    # 【關鍵修正：Streamlit 查詢參數更新】
     query_params = st.query_params
     if 'preview_id' in query_params:
         try:
-            # query_params['preview_id'] 現在直接是字串值，不再是列表
+            # st.query_params 直接返回單一值 (str)，不需要 [0]
             clicked_id = int(query_params['preview_id']) 
             st.session_state.preview_from_table_id = clicked_id
         except:
+            # 忽略轉換錯誤
             pass
+            
         # 清除 URL 參數，避免重整時重複觸發
-        # st.experimental_set_query_params 已棄用，改用 st.query_params['key'] = None
-        st.query_params['preview_id'] = None 
+        # 使用 st.query_params 刪除參數的方式
+        if 'preview_id' in st.query_params:
+            del st.query_params['preview_id'] 
 
 
     for i, proj_name in enumerate(project_names):
@@ -1390,19 +1393,18 @@ def render_project_tables(df, project_metadata):
 
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                # 【新增功能：附件連結】在 DataFrame 中創建顯示用的連結欄位
-                def create_link_markdown(row):
+                # 【改為 LinkColumn】生成相對路徑 URL，而非 Markdown
+                def create_link_url(row):
                     file_name = row.get('附件', '').strip()
                     quote_id = row['ID']
                     if file_name:
-                        # 創建一個連結到當前頁面，但帶有 query parameter 的連結
-                        # 點擊後會觸發 run_app 頂部的邏輯，設置 session state 進行預覽
-                        return f"[📎 {os.path.basename(file_name)}](?preview_id={quote_id})" 
-                    return ""
+                        # 生成 query params 連結，點擊後會重整並帶上參數
+                        return f"?preview_id={quote_id}"
+                    return None
                 
-                editable_df['附件_display'] = editable_df.apply(create_link_markdown, axis=1)
+                editable_df['附件_display'] = editable_df.apply(create_link_url, axis=1)
                 
-                # 【修正點 3】表格欄位顯示順序：將 '附件_display' 放在 '最後修改時間' 之後
+                # 【修正點 3】表格欄位顯示順序
                 cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '附件_display', '標記刪除'] 
 
                 # 使用 column_order 來控制顯示
@@ -1435,8 +1437,13 @@ def render_project_tables(df, project_metadata):
                             help="報價項目最後儲存的時間"
                         ),
                         
-                        # 【修正點 4】附件欄位配置為唯讀連結顯示
-                        "附件_display": st.column_config.TextColumn("附件", disabled=True, width="medium", help="點擊檔名可跳轉至下方預覽"),
+                        # 【修正點 4】改用 LinkColumn，確保可點擊
+                        "附件_display": st.column_config.LinkColumn(
+                            "附件", 
+                            width="medium", 
+                            help="點擊以在下方預覽附件",
+                            display_text="📎 檢視附件" # 統一顯示文字，解決中文檔名編碼與 LinkColumn 顯示問題
+                        ),
                         
                         "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny"), 
                     },
@@ -1457,6 +1464,7 @@ def render_project_tables(df, project_metadata):
                       convert_df_to_excel(df), 
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
 
 
 # *--- 6. 模組化渲染函數 - 結束 ---*
@@ -1553,6 +1561,7 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
 
 
