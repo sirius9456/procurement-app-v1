@@ -6,7 +6,8 @@ import json
 import gspread
 import logging
 import time
-import base64 
+import base64
+import extra_streamlit_components
 # GCS 相關導入
 from google.cloud import storage 
 from google.oauth2 import service_account
@@ -19,8 +20,8 @@ from google.oauth2 import service_account
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 版本號 (正式版 V2.0.2 Final)
-APP_VERSION = "V2.0.2 (Official Final)" 
+# 版本號 (正式版 V2.0.2 Final Cookie版)
+APP_VERSION = "V2.1.0" 
 
 # 時間格式
 DATE_FORMAT = "%Y-%m-%d"
@@ -92,10 +93,23 @@ STATUS_OPTIONS = ["詢價中", "已報價", "待採購", "已採購", "運送中
 
 
 # ******************************
-# *--- 2. 認證與安全 ---*
+# *--- 2. 認證與安全 (Cookie 整合) ---*
 # ******************************
 
+# 初始化 Cookie 管理器 (使用 cache 避免重複重載)
+@st.cache_resource(experimental_allow_widgets=True)
+def get_cookie_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_cookie_manager()
+COOKIE_NAME = "procurement_auth_user"
+
 def logout():
+    # 刪除 Cookie 並登出
+    try:
+        cookie_manager.delete(COOKIE_NAME)
+    except:
+        pass
     st.session_state["authenticated"] = False
     st.rerun()
 
@@ -104,27 +118,51 @@ def login_form():
     DEFAULT_PASSWORD = os.environ.get("AUTH_PASSWORD", "admin123")
     credentials = {"username": DEFAULT_USERNAME, "password": DEFAULT_PASSWORD}
 
+    # 1. 初始化 Session State
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
-        
-    if st.session_state["authenticated"]: return 
 
+    # 2. 檢查 Cookie 是否存在且有效 (自動登入)
+    # 我們將 username 存入 cookie 簡單驗證
+    auth_cookie = cookie_manager.get(COOKIE_NAME)
+    if auth_cookie == DEFAULT_USERNAME and not st.session_state["authenticated"]:
+        st.session_state["authenticated"] = True
+        # 這裡不使用 rerun，避免無限迴圈，直接讓程式往下執行
+
+    # 3. 若已驗證成功，直接返回，進入主程式
+    if st.session_state["authenticated"]: 
+        return 
+
+    # 4. 顯示登入表單
     st.markdown("<br><br>", unsafe_allow_html=True)
     _, col_center, _ = st.columns([1, 2, 1])
     with col_center:
         with st.container(border=True):
             st.title("🔐 採購系統登入 (正式版)")
             st.markdown("---")
-            username = st.text_input("用戶名", key="login_user")
-            password = st.text_input("密碼", type="password", key="login_pwd")
-            if st.button("登入", type="primary", use_container_width=True):
+            
+            # 使用 form 來處理輸入，體驗較佳
+            with st.form("login_form"):
+                username = st.text_input("用戶名")
+                password = st.text_input("密碼", type="password")
+                remember_me = st.checkbox("保持登入 (30天)")
+                submit_button = st.form_submit_button("登入", type="primary", use_container_width=True)
+
+            if submit_button:
                 if username.strip() == credentials["username"].strip() and password == credentials["password"]:
                     st.session_state["authenticated"] = True
+                    
+                    # 5. 如果勾選保持登入，設定 Cookie (30天後過期)
+                    if remember_me:
+                        expires = datetime.now() + timedelta(days=30)
+                        cookie_manager.set(COOKIE_NAME, username, expires_at=expires)
+                    
                     st.toast("✅ 登入成功！")
+                    time.sleep(0.5) # 等待 cookie 寫入
                     st.rerun()
                 else:
                     st.error("帳號或密碼錯誤。")
-    st.stop() 
+    st.stop()
 
 
 # ******************************
@@ -815,3 +853,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
