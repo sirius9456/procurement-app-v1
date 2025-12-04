@@ -9,6 +9,7 @@ import time
 import base64
 import extra_streamlit_components
 # GCS 相關導入
+import extra_streamlit_components as stx
 from google.cloud import storage 
 from google.oauth2 import service_account
 
@@ -854,5 +855,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
