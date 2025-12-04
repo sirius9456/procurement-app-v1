@@ -96,8 +96,9 @@ STATUS_OPTIONS = ["詢價中", "已報價", "待採購", "已採購", "運送中
 # *--- 2. 認證與安全 (Cookie 整合) ---*
 # ******************************
 
+
 # 初始化 Cookie 管理器 (使用 cache 避免重複重載)
-@st.cache_resource(experimental_allow_widgets=True)
+@st.cache_resource
 def get_cookie_manager():
     return stx.CookieManager()
 
@@ -853,4 +854,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
