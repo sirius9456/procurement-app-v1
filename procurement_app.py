@@ -19,8 +19,8 @@ from google.oauth2 import service_account
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 版本號 (正式版 V2.0)
-APP_VERSION = "V2.0.0 (Official)" 
+# 版本號 (正式版 V2.0.2 Final)
+APP_VERSION = "V2.0.2 (Official Final)" 
 
 # 時間格式
 DATE_FORMAT = "%Y-%m-%d"
@@ -35,7 +35,7 @@ else:
     except:
         SHEET_URL = "https://docs.google.com/spreadsheets/d/16vSMLx-GYcIpV2cuyGIeZctvA2sI8zcqh9NKKyrs-uY/edit?usp=sharing"
 
-# 【正式版設定】工作表名稱 (移除 _測試 後綴)
+# 【正式版設定】工作表名稱
 DATA_SHEET_NAME = '採購總表'
 METADATA_SHEET_NAME = '專案設定'
 
@@ -56,7 +56,7 @@ else:
 
 st.set_page_config(
     page_title=f"專案採購小幫手 {APP_VERSION}", 
-    page_icon="💼", # 正式版圖示改為公事包
+    page_icon="💼", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -100,7 +100,6 @@ def logout():
     st.rerun()
 
 def login_form():
-    # 正式版可考慮使用不同的環境變數，這裡暫時沿用
     DEFAULT_USERNAME = os.environ.get("AUTH_USERNAME", "admin")
     DEFAULT_PASSWORD = os.environ.get("AUTH_PASSWORD", "admin123")
     credentials = {"username": DEFAULT_USERNAME, "password": DEFAULT_PASSWORD}
@@ -119,7 +118,6 @@ def login_form():
             username = st.text_input("用戶名", key="login_user")
             password = st.text_input("密碼", type="password", key="login_pwd")
             if st.button("登入", type="primary", use_container_width=True):
-                # 簡單驗證邏輯，正式環境建議串接更安全的驗證
                 if username.strip() == credentials["username"].strip() and password == credentials["password"]:
                     st.session_state["authenticated"] = True
                     st.toast("✅ 登入成功！")
@@ -210,11 +208,9 @@ def load_data_from_sheets():
             data_ws = sh.worksheet(DATA_SHEET_NAME)
             data_df = pd.DataFrame(data_ws.get_all_records())
         except:
-            # 若找不到正式表，回傳空表 (避免程式崩潰，但會顯示錯誤)
             st.error(f"找不到工作表：{DATA_SHEET_NAME}")
             data_df = pd.DataFrame(columns=expected_cols)
 
-        # 欄位補齊與清洗
         if data_df.empty: data_df = pd.DataFrame(columns=expected_cols)
         else:
             for col in expected_cols:
@@ -321,20 +317,17 @@ def calculate_dashboard_metrics(df_state, project_metadata_state):
     df = df_state.copy()
     if df.empty: return 0, 0, 0, 0
     
-    # 預算計算
     for _, proj_data in df.groupby('專案名稱'):
         if proj_data['專案名稱'].iloc[0] not in project_metadata_state: continue
         for _, item_df in proj_data.groupby('專案項目'):
             selected = item_df[item_df['選取'] == True]
             total_budget += selected['總價'].sum() if not selected.empty else item_df['總價'].min()
     
-    # 風險計算
     temp = df.copy()
     temp['d'] = pd.to_datetime(temp['預計交貨日'], errors='coerce')
     temp['l'] = pd.to_datetime(temp['採購最慢到貨日'], errors='coerce')
     risk_items = (temp['d'] > temp['l']).sum()
     
-    # 待處理
     pending = df[~df['狀態'].isin(['已收貨', '取消'])].shape[0]
     return total_projects, total_budget, risk_items, pending
 
@@ -372,7 +365,6 @@ def handle_master_save():
             main_idx = idx_in_main[0]
             
             row_changed = False
-            # 日期更新
             new_date = new_row['預計交貨日']
             if pd.notna(new_date):
                  new_date = pd.to_datetime(new_date).normalize()
@@ -380,13 +372,11 @@ def handle_master_save():
                      main_df.loc[main_idx, '預計交貨日'] = new_date
                      row_changed = True
             
-            # 其他欄位
             for col in ['選取', '供應商', '單價', '數量', '狀態', '標記刪除']:
                 if str(main_df.loc[main_idx, col]) != str(new_row[col]):
                     main_df.loc[main_idx, col] = new_row[col]
                     row_changed = True
             
-            # 總價重算
             new_total = float(main_df.loc[main_idx, '單價']) * float(main_df.loc[main_idx, '數量'])
             if main_df.loc[main_idx, '總價'] != new_total:
                 main_df.loc[main_idx, '總價'] = new_total
@@ -462,7 +452,14 @@ def handle_add_new_project():
 
 def handle_add_new_quote(latest_arrival):
     proj = st.session_state.quote_project_select
-    item = st.session_state.item_name_to_use_final
+    
+    # 【修復重點】直接從 Widget 讀取值
+    selected_item = st.session_state.get("quote_item_select", "")
+    if selected_item == '🆕 新增...':
+        item = st.session_state.get("quote_item_new_input", "")
+    else:
+        item = selected_item
+
     if not proj or not item:
         st.error("請填寫專案與項目")
         return
@@ -544,8 +541,9 @@ def render_sidebar_ui(df, project_metadata, today):
                 
                 items = sorted(df['專案項目'].unique().tolist())
                 sel_i = st.selectbox("項目", ['🆕 新增...'] + items, key="quote_item_select")
-                if sel_i == '🆕 新增...': st.text_input("新項目名稱", key="quote_item_new_input")
-                else: st.session_state.item_name_to_use_final = sel_i
+                
+                if sel_i == '🆕 新增...': 
+                    st.text_input("新項目名稱", key="quote_item_new_input")
                 
                 st.text_input("供應商", key="quote_supplier")
                 st.number_input("單價", 0, step=1, key="quote_price")
