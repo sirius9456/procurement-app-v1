@@ -1,46 +1,50 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-from io import BytesIO
+from datetime import datetime, timedelta, date 
 import os 
 import json
 import gspread
 import logging
 import time
+import base64 
+# GCS 相關導入
+from google.cloud import storage 
+from google.oauth2 import service_account
 
 # ******************************
 # *--- 1. 全域設定與常數 ---*
 # ******************************
 
-
-
 # 配置 Streamlit 日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 版本號
-APP_VERSION = "V2.2.4 (Prod Deployment)"
+# 版本號 (正式版 V2.0)
+APP_VERSION = "V2.0.0 (Official)" 
 
 # 時間格式
 DATE_FORMAT = "%Y-%m-%d"
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # --- Google Sheets URL 設定 ---
-# 優先順序：1. 環境變數 (GCE) -> 2. Streamlit Secrets -> 3. 預設/硬編碼
 if "GCE_SHEET_URL" in os.environ:
     SHEET_URL = os.environ["GCE_SHEET_URL"]
 else:
     try:
         SHEET_URL = st.secrets["spreadsheet"]["url"]
     except:
-        SHEET_URL = "https://docs.google.com/spreadsheets/d/1g1Lg1k1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1s1/edit" # 請確保此處為您的實際 URL
+        SHEET_URL = "https://docs.google.com/spreadsheets/d/16vSMLx-GYcIpV2cuyGIeZctvA2sI8zcqh9NKKyrs-uY/edit?usp=sharing"
 
-# 工作表名稱 (正式版)
+# 【正式版設定】工作表名稱 (移除 _測試 後綴)
 DATA_SHEET_NAME = '採購總表'
 METADATA_SHEET_NAME = '專案設定'
 
-# --- 憑證路徑設定 (智慧偵測) ---
-# 優先順序：1. 環境變數 -> 2. secrets 資料夾 -> 3. 根目錄 -> 4. 預設
+# --- GCS 設定 ---
+GCS_BUCKET_NAME = "procurement-attachments-bucket"
+GCS_FOLDER_PATH = "attachments"
+GCS_BASE_URL = f"https://storage.googleapis.com/{GCS_BUCKET_NAME}"
+
+# --- 憑證路徑設定 ---
 if "GSHEETS_CREDENTIALS_PATH" in os.environ:
     GSHEETS_CREDENTIALS = os.environ["GSHEETS_CREDENTIALS_PATH"]
 elif os.path.exists("secrets/google_sheets_credentials.json"):
@@ -48,11 +52,11 @@ elif os.path.exists("secrets/google_sheets_credentials.json"):
 elif os.path.exists("google_sheets_credentials.json"):
     GSHEETS_CREDENTIALS = "google_sheets_credentials.json"
 else:
-    GSHEETS_CREDENTIALS = "secrets/google_sheets_credentials.json" # 預設值
+    GSHEETS_CREDENTIALS = "secrets/google_sheets_credentials.json"
 
 st.set_page_config(
     page_title=f"專案採購小幫手 {APP_VERSION}", 
-    page_icon="🛠️", 
+    page_icon="💼", # 正式版圖示改為公事包
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -60,281 +64,231 @@ st.set_page_config(
 # CSS 樣式
 CUSTOM_CSS = """
 <style>
-    /* 強制指定中文字型 */
     html, body, [class*="css"] {
         font-family: "Microsoft JhengHei", "Noto Sans TC", "PingFang TC", sans-serif;
     }
-
-    /* 儀表板樣式 */
     .metric-box {
-        padding: 15px;
-        border-radius: 8px;
-        text-align: center;
-        color: white;
-        margin-bottom: 10px;
+        padding: 15px; border-radius: 8px; text-align: center; color: white; margin-bottom: 10px;
     }
-    .metric-title {
-        font-size: 14px;
-        opacity: 0.8;
-    }
-    .metric-value {
-        font-size: 24px;
-        font-weight: bold;
-    }
+    .metric-title { font-size: 14px; opacity: 0.8; }
+    .metric-value { font-size: 24px; font-weight: bold; }
+    .project-header { font-size: 18px; font-weight: bold; color: #FF9800; }
+    .item-header { font-size: 16px; font-weight: 600; color: #2196F3; margin-left: 10px; }
+    .meta-info { font-size: 13px; color: #888; }
     
-    /* 專案標題樣式 */
-    .project-header {
-        font-size: 18px;
-        font-weight: bold;
-        color: #4CAF50;
-    }
-    .item-header {
-        font-size: 16px;
-        font-weight: 600;
-        color: #2196F3;
-        margin-left: 10px;
-    }
-    .meta-info {
-        font-size: 13px;
-        color: #888;
-    }
-    
-    /* 輸入欄位顏色統一 (適配深色模式) */
     div[data-baseweb="select"] > div, div[data-baseweb="base-input"] > input, div[data-baseweb="input"] > div { 
-        background-color: #262730 !important; 
-        color: white !important; 
-        -webkit-text-fill-color: white !important; 
+        background-color: #262730 !important; color: white !important; -webkit-text-fill-color: white !important; 
     }
-    
-    /* --- 日曆圖示修正 (強制白色) --- */
-    /* 1. 針對 Streamlit 表格內的日期選擇器 */
     [data-testid="stDataFrame"] input[type="date"]::-webkit-calendar-picker-indicator {
-        filter: invert(1) grayscale(100%) brightness(200%) !important;
-        cursor: pointer;
+        filter: invert(1); cursor: pointer;
     }
-    
-    /* 2. 針對一般的 date input (如側邊欄) */
     input[type="date"]::-webkit-calendar-picker-indicator {
-        filter: invert(1) grayscale(100%) brightness(200%) !important;
-        cursor: pointer;
+        filter: invert(1); cursor: pointer;
     }
 </style>
 """
 
 STATUS_OPTIONS = ["詢價中", "已報價", "待採購", "已採購", "運送中", "已到貨", "已驗收", "取消"]
 
-# *--- 1. 全域設定與常數 - 結束 ---*
-
 
 # ******************************
-# *--- 1. 登入與安全函式 ---* (接續原本邏輯)
+# *--- 2. 認證與安全 ---*
 # ******************************
 
 def logout():
-    """登出函式：清除驗證狀態並重新運行。"""
     st.session_state["authenticated"] = False
     st.rerun()
 
 def login_form():
-    """渲染登入表單並處理密碼驗證。"""
-    
-    DEFAULT_USERNAME = os.environ.get("AUTH_USERNAME", "dev_user")
-    DEFAULT_PASSWORD = os.environ.get("AUTH_PASSWORD", "dev_pwd")
-    
+    # 正式版可考慮使用不同的環境變數，這裡暫時沿用
+    DEFAULT_USERNAME = os.environ.get("AUTH_USERNAME", "admin")
+    DEFAULT_PASSWORD = os.environ.get("AUTH_PASSWORD", "admin123")
     credentials = {"username": DEFAULT_USERNAME, "password": DEFAULT_PASSWORD}
 
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
         
-    if st.session_state["authenticated"]:
-        return 
+    if st.session_state["authenticated"]: return 
 
     st.markdown("<br><br>", unsafe_allow_html=True)
-    col_empty, col_center, col_empty2 = st.columns([1, 2, 1])
-    
+    _, col_center, _ = st.columns([1, 2, 1])
     with col_center:
         with st.container(border=True):
-            st.title("🔐 請登入以繼續")
+            st.title("🔐 採購系統登入 (正式版)")
             st.markdown("---")
-            
-            username = st.text_input("用戶名", key="login_username", value=credentials["username"], disabled=True)
-            password = st.text_input("密碼", type="password", key="login_password")
-            
-            if st.button("登入", type="primary"):
+            username = st.text_input("用戶名", key="login_user")
+            password = st.text_input("密碼", type="password", key="login_pwd")
+            if st.button("登入", type="primary", use_container_width=True):
+                # 簡單驗證邏輯，正式環境建議串接更安全的驗證
                 if username.strip() == credentials["username"].strip() and password == credentials["password"]:
                     st.session_state["authenticated"] = True
                     st.toast("✅ 登入成功！")
                     st.rerun()
                 else:
-                    st.error("用戶名或密碼錯誤。")
-            
+                    st.error("帳號或密碼錯誤。")
     st.stop() 
-# *--- 1. 登入與安全函式 ---*
-# ******************************
 
 
 # ******************************
-# *--- 2. 數據讀取與寫入函式 ---*
+# *--- 3. 外部服務 (GCS & Utils) ---*
 # ******************************
 
+@st.cache_resource
+def get_gcs_signing_client():
+    """獲取 GCS Client (含私鑰)，用於 Signed URL。"""
+    try:
+        sa_info = st.secrets["gcs_sa"]
+        credentials = service_account.Credentials.from_service_account_info(sa_info)
+        return storage.Client(credentials=credentials)
+    except KeyError:
+        st.error("GCS 憑證錯誤：secrets.toml 中缺少 [gcs_sa] 設定。")
+        raise
+    except Exception as e:
+        st.error(f"GCS Client 載入失敗：{e}")
+        raise
+
+def get_gcs_client_standard():
+    """獲取標準 GCS Client (用於一般上傳/刪除)。"""
+    return storage.Client()
+
+def save_uploaded_file(uploaded_file, quote_id):
+    """上傳檔案至 GCS。"""
+    if uploaded_file is None: return None
+    try:
+        client = get_gcs_client_standard()
+        bucket = client.bucket(GCS_BUCKET_NAME)
+        destination_blob_name = f"{GCS_FOLDER_PATH}/{quote_id}_{uploaded_file.name}"
+        blob = bucket.blob(destination_blob_name)
+        blob.upload_from_string(uploaded_file.getvalue(), content_type=uploaded_file.type)
+        return destination_blob_name
+    except Exception as e:
+        logging.error(f"GCS 上傳失敗: {e}")
+        st.error(f"❌ 上傳失敗：{e}")
+        return None
+
+def delete_file_from_gcs(gcs_object_name):
+    """刪除 GCS 檔案。"""
+    if not gcs_object_name: return True
+    try:
+        client = get_gcs_client_standard()
+        bucket = client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(gcs_object_name)
+        if blob.exists(): blob.delete()
+        return True
+    except Exception as e:
+        logging.error(f"GCS 刪除失敗: {e}")
+        return False
+
+def add_business_days(start_date, num_days):
+    """計算工作日。"""
+    current_date = start_date
+    days_added = 0
+    while days_added < num_days:
+        current_date += timedelta(days=1)
+        if current_date.weekday() < 5: days_added += 1
+    return current_date
 
 
-# 【修改】暫時註解掉快取功能，強制每次重整都讀取最新資料
-# @st.cache_data(ttl=600, show_spinner="連線 Google Sheets...")
+# ******************************
+# *--- 4. 數據處理 (Google Sheets) ---*
+# ******************************
+
 def load_data_from_sheets():
-    """直接使用 gspread 讀取 Google Sheets 中的數據 (正式版)。"""
+    expected_cols = ['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '附件', '標記刪除']
     
-    # 定義標準欄位結構
-    expected_cols = ['ID', '選取', '專案名稱', '專案項目', '供應商', '單價', '數量', '總價', '預計交貨日', '狀態', '採購最慢到貨日', '最後修改時間', '標記刪除']
-    
-    if not SHEET_URL:
-        st.info("❌ Google Sheets URL 尚未配置。使用空的數據結構。")
-        empty_data = pd.DataFrame(columns=expected_cols)
-        return empty_data, {}
+    if not SHEET_URL: return pd.DataFrame(columns=expected_cols), {}
 
     try:
-        # --- 1. 授權與認證 ---
-        # 檢查憑證是否存在 (使用全域變數 GSHEETS_CREDENTIALS，它已經經過智慧偵測)
         if not GSHEETS_CREDENTIALS or not os.path.exists(GSHEETS_CREDENTIALS):
-             st.error(f"❌ 憑證錯誤：找不到憑證檔案。路徑: {GSHEETS_CREDENTIALS}")
-             st.info("💡 提示：請確認 'google_sheets_credentials.json' 是否在根目錄、secrets 資料夾，或已設定環境變數。")
-             raise FileNotFoundError("憑證檔案不存在或路徑錯誤")
-            
+             raise FileNotFoundError("憑證檔案不存在")
+             
         gc = gspread.service_account(filename=GSHEETS_CREDENTIALS)
         sh = gc.open_by_url(SHEET_URL)
         
-        # --- 2. 讀取採購總表 (Data) ---
+        # 讀取 Data
         try:
             data_ws = sh.worksheet(DATA_SHEET_NAME)
-        except gspread.exceptions.WorksheetNotFound:
-            st.error(f"❌ 找不到工作表：**{DATA_SHEET_NAME}**")
-            st.warning(f"請確認 Google Sheets 中是否存在名為「**{DATA_SHEET_NAME}**」的分頁。")
-            return pd.DataFrame(columns=expected_cols), {}
-            
-        data_records = data_ws.get_all_records()
-        data_df = pd.DataFrame(data_records)
-
-        # 強制補齊欄位
-        if data_df.empty:
+            data_df = pd.DataFrame(data_ws.get_all_records())
+        except:
+            # 若找不到正式表，回傳空表 (避免程式崩潰，但會顯示錯誤)
+            st.error(f"找不到工作表：{DATA_SHEET_NAME}")
             data_df = pd.DataFrame(columns=expected_cols)
+
+        # 欄位補齊與清洗
+        if data_df.empty: data_df = pd.DataFrame(columns=expected_cols)
         else:
             for col in expected_cols:
                 if col not in data_df.columns:
-                    if col in ['ID', '數量']:
-                        data_df[col] = 0
-                    elif col in ['單價', '總價']:
-                        data_df[col] = 0.0
-                    elif col in ['選取', '標記刪除']:
-                         data_df[col] = False
-                    else:
-                        data_df[col] = ''
+                    if col in ['ID', '數量']: data_df[col] = 0
+                    elif col in ['單價', '總價']: data_df[col] = 0.0
+                    elif col in ['選取', '標記刪除']: data_df[col] = False
+                    else: data_df[col] = ''
 
-        # 【關鍵修正：布林值清洗】
-        # 避免將空字串或異類格式誤判為 True，明確轉換
         def clean_bool(x):
             if isinstance(x, bool): return x
-            # 只有字串明確為 "TRUE" (不分大小寫) 才算 True，其餘皆 False
             return str(x).strip().upper() == 'TRUE'
 
         for col in ['選取', '標記刪除']:
-            if col in data_df.columns:
-                data_df[col] = data_df[col].apply(clean_bool)
+            if col in data_df.columns: data_df[col] = data_df[col].apply(clean_bool)
 
-        # 數據類型轉換 (其他欄位)
-        dtype_map = {
-            'ID': 'Int64', '單價': 'float', '數量': 'Int64', '總價': 'float'
-        }
-        valid_dtype_map = {col: dtype for col, dtype in dtype_map.items() if col in data_df.columns}
-        if valid_dtype_map:
-            data_df = data_df.astype(valid_dtype_map, errors='ignore')
-
-        # 日期欄位處理
-        if '預計交貨日' in data_df.columns:
-            data_df['預計交貨日'] = pd.to_datetime(data_df['預計交貨日'], errors='coerce', format=DATE_FORMAT) 
-        if '採購最慢到貨日' in data_df.columns:
-            data_df['採購最慢到貨日'] = pd.to_datetime(data_df['採購最慢到貨日'], errors='coerce', format=DATE_FORMAT) 
+        dtype_map = {'ID': 'Int64', '單價': 'float', '數量': 'Int64', '總價': 'float'}
+        data_df = data_df.astype({k: v for k, v in dtype_map.items() if k in data_df.columns}, errors='ignore')
         
-        # --- 3. 讀取專案設定 (Metadata) ---
+        if '附件' in data_df.columns: data_df['附件'] = data_df['附件'].astype(str)
+        for col in ['預計交貨日', '採購最慢到貨日']:
+            if col in data_df.columns: data_df[col] = pd.to_datetime(data_df[col], errors='coerce', format=DATE_FORMAT)
+
+        # 讀取 Metadata
         try:
             metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
-        except gspread.exceptions.WorksheetNotFound:
-            st.error(f"❌ 找不到工作表：**{METADATA_SHEET_NAME}**")
-            st.warning(f"請確認 Google Sheets 中是否存在名為「**{METADATA_SHEET_NAME}**」的分頁。")
-            return data_df, {}
-
-        metadata_records = metadata_ws.get_all_records()
-        
+            metadata_records = metadata_ws.get_all_records()
+        except:
+            st.error(f"找不到工作表：{METADATA_SHEET_NAME}")
+            metadata_records = []
+            
         project_metadata = {}
-        if metadata_records:
-            for row in metadata_records:
-                try:
-                    due_date = pd.to_datetime(str(row['專案交貨日'])).date()
-                except (ValueError, TypeError):
-                    due_date = datetime.now().date()
-                    
-                project_metadata[row['專案名稱']] = {
-                    'due_date': due_date,
-                    'buffer_days': int(row.get('緩衝天數', 7)),
-                    'last_modified': str(row.get('最後修改', ''))
-                }
+        for row in metadata_records:
+            try: due_date = pd.to_datetime(str(row['專案交貨日'])).date()
+            except: due_date = datetime.now().date()
+            project_metadata[row['專案名稱']] = {
+                'due_date': due_date,
+                'buffer_days': int(row.get('緩衝天數', 7)),
+                'last_modified': str(row.get('最後修改', ''))
+            }
 
-        st.success(f"✅ 數據已從 `{DATA_SHEET_NAME}` 及 `{METADATA_SHEET_NAME}` 載入！") 
+        st.success(f"✅ 數據同步完成 (來源: {DATA_SHEET_NAME})") 
         return data_df, project_metadata
 
     except Exception as e:
-        logging.exception("Google Sheets 數據載入時發生致命錯誤！") 
-        st.error(f"❌ 數據載入失敗！")
-        st.code(f"錯誤訊息: {e}")
-        empty_data = pd.DataFrame(columns=expected_cols)
+        st.error(f"❌ 數據載入失敗: {e}")
         st.session_state.data_load_failed = True
-        return empty_data, {}
-
+        return pd.DataFrame(columns=expected_cols), {}
 
 def write_data_to_sheets(df_to_write, metadata_to_write):
-    """直接使用 gspread 寫回 Google Sheets (正式版)。"""
-    if st.session_state.get('data_load_failed', False) or not SHEET_URL:
-        st.warning("數據載入失敗或 URL 未配置，已禁用寫入 Sheets。")
-        return False
+    if st.session_state.get('data_load_failed', False) or not SHEET_URL: return False
         
     try:
-        # --- 1. 授權與認證 ---
         gc = gspread.service_account(filename=GSHEETS_CREDENTIALS)
         sh = gc.open_by_url(SHEET_URL)
         
-        # --- 2. 寫入採購總表 (Data) ---
-        cols_to_drop = ['交期判定', '交期顯示']
-        df_export = df_to_write.drop(columns=[c for c in cols_to_drop if c in df_to_write.columns], errors='ignore')
-
-        # 日期轉字串
+        # 寫入 Data
+        df_export = df_to_write.drop(columns=['交期判定', '交期顯示', '預覽', '附件名稱'], errors='ignore')
         for col in ['預計交貨日', '採購最慢到貨日']:
             if col in df_export.columns:
                 df_export[col] = pd.to_datetime(df_export[col], errors='coerce').dt.strftime(DATE_FORMAT).fillna("")
-                
-        # 填充空值
-        df_export = df_export.fillna("")
         
-        # 【關鍵修正：布林值序列化】
-        # gspread 不接受 numpy.bool_，必須轉為 Python 原生 bool
+        df_export = df_export.fillna("")
         for col in ['選取', '標記刪除']:
-            if col in df_export.columns:
-                # 確保是布林型態，並轉為 Python bool
-                df_export[col] = df_export[col].apply(lambda x: bool(x))
-
-        # 轉為 object 以便相容
-        df_export = df_export.astype(object) 
-                
-        try:
-            data_ws = sh.worksheet(DATA_SHEET_NAME)
-        except gspread.exceptions.WorksheetNotFound:
-            st.error(f"❌ 找不到工作表：{DATA_SHEET_NAME}，無法寫入。")
-            return False
+            if col in df_export.columns: df_export[col] = df_export[col].apply(bool)
+        if '附件' in df_export.columns: df_export['附件'] = df_export['附件'].astype(str)
+        
+        try: data_ws = sh.worksheet(DATA_SHEET_NAME)
+        except: return False
 
         data_ws.clear()
-        # 將 DataFrame 轉為列表列表 (List of Lists)
-        data_to_update = [df_export.columns.values.tolist()] + df_export.values.tolist()
-        data_ws.update(data_to_update)
+        data_ws.update([df_export.columns.values.tolist()] + df_export.astype(object).values.tolist())
         
-        # --- 3. 寫入專案設定 (Metadata) ---
+        # 寫入 Metadata
         metadata_list = [
             {'專案名稱': name, 
              '專案交貨日': data['due_date'].strftime(DATE_FORMAT) if isinstance(data['due_date'], (datetime, date)) else str(data['due_date']),
@@ -343,12 +297,8 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
             for name, data in metadata_to_write.items()
         ]
         metadata_df = pd.DataFrame(metadata_list)
-        
-        try:
-            metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
-        except gspread.exceptions.WorksheetNotFound:
-            st.error(f"❌ 找不到工作表：{METADATA_SHEET_NAME}，無法寫入設定。")
-            return False
+        try: metadata_ws = sh.worksheet(METADATA_SHEET_NAME)
+        except: return False
 
         metadata_ws.clear()
         if not metadata_df.empty:
@@ -356,872 +306,514 @@ def write_data_to_sheets(df_to_write, metadata_to_write):
             
         st.cache_data.clear()
         return True
-        
     except Exception as e:
-        logging.exception("Google Sheets 數據寫入時發生致命錯誤！")
-        st.error(f"❌ 數據寫回 Google Sheets 失敗！")
-        st.code(f"寫入錯誤訊息: {e}")
+        st.error(f"❌ 寫入失敗: {e}")
         return False
 
 
-# *--- 2. 數據讀取與寫入函式 - 結束 ---*
-
-
 # ******************************
-# *--- 3. 輔助函式區 ---*
+# *--- 5. 邏輯處理 (Actions) ---*
 # ******************************
 
-def add_business_days(start_date, num_days):
-    """計算工作日 (跳過週末)。"""
-    current_date = start_date
-    days_added = 0
-    while days_added < num_days:
-        current_date += timedelta(days=1)
-        if current_date.weekday() < 5: days_added += 1
-    return current_date
-
-@st.cache_data
-def convert_df_to_excel(df):
-    """將 DataFrame 轉換為 Excel 二進位檔案 (使用 BytesIO)。"""
-    df_export = df.drop(columns=['標記刪除', '交期顯示'], errors='ignore') 
-    output = BytesIO()
-    
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export.to_excel(writer, index=False, sheet_name='採購報價總表')
-    
-    processed_data = output.getvalue()
-    return processed_data
-
-def calculate_project_budget(df, project_name):
-    """計算單一專案的預算 (已選項目或預估最小值)。"""
-    proj_df = df[df['專案名稱'] == project_name]
-    total_budget = 0
-    for _, item_df in proj_df.groupby('專案項目'):
-        selected_rows = item_df[item_df['選取'] == True]
-        if not selected_rows.empty:
-            total_budget += selected_rows['總價'].sum()
-        else:
-            if not item_df.empty:
-                total_budget += item_df['總價'].min()
-    return total_budget
-
-@st.cache_data(show_spinner=False)
 def calculate_dashboard_metrics(df_state, project_metadata_state):
-    """計算儀表板所需的總體指標。"""
-    
     total_projects = len(project_metadata_state)
     total_budget = 0
-    risk_items = 0
     df = df_state.copy()
+    if df.empty: return 0, 0, 0, 0
     
-    if df.empty:
-        return 0, 0, 0, 0
-
-    # 1. 計算總預算
+    # 預算計算
     for _, proj_data in df.groupby('專案名稱'):
-        if proj_data['專案名稱'].iloc[0] not in project_metadata_state: continue 
-            
+        if proj_data['專案名稱'].iloc[0] not in project_metadata_state: continue
         for _, item_df in proj_data.groupby('專案項目'):
-            selected_rows = item_df[item_df['選取'] == True]
-            if not selected_rows.empty:
-                total_budget += selected_rows['總價'].sum()
-            elif not item_df.empty:
-                total_budget += item_df['總價'].min()
+            selected = item_df[item_df['選取'] == True]
+            total_budget += selected['總價'].sum() if not selected.empty else item_df['總價'].min()
     
-    # 2. 計算風險項目 (使用字串轉日期進行比較)
-    temp_df_risk = df.copy() 
-    temp_df_risk['預計交貨日_dt'] = pd.to_datetime(temp_df_risk['預計交貨日'], errors='coerce')
-    temp_df_risk['採購最慢到貨日_dt'] = pd.to_datetime(temp_df_risk['採購最慢到貨日'], errors='coerce')
-    risk_items = (temp_df_risk['預計交貨日_dt'] > temp_df_risk['採購最慢到貨日_dt']).sum()
+    # 風險計算
+    temp = df.copy()
+    temp['d'] = pd.to_datetime(temp['預計交貨日'], errors='coerce')
+    temp['l'] = pd.to_datetime(temp['採購最慢到貨日'], errors='coerce')
+    risk_items = (temp['d'] > temp['l']).sum()
     
+    # 待處理
+    pending = df[~df['狀態'].isin(['已收貨', '取消'])].shape[0]
+    return total_projects, total_budget, risk_items, pending
 
-    # 3. 計算需要處理的報價數量
-    pending_quotes = df[~df['狀態'].isin(['已收貨', '取消'])].shape[0]
+def calculate_project_budget(df, project_name):
+    proj_df = df[df['專案名稱'] == project_name]
+    total = 0
+    for _, item_df in proj_df.groupby('專案項目'):
+        sel = item_df[item_df['選取'] == True]
+        total += sel['總價'].sum() if not sel.empty else item_df['總價'].min()
+    return total
 
-    return total_projects, total_budget, risk_items, pending_quotes
-
-
-@st.cache_data(show_spinner=False)
 def calculate_latest_arrival_dates(df, metadata):
-    """根據專案設定，計算每個採購項目的採購最慢到貨日。(V2.1.6 核心邏輯)"""
+    if df.empty or not metadata: return df
+    meta_df = pd.DataFrame.from_dict(metadata, orient='index').reset_index().rename(columns={'index': '專案名稱'})
+    meta_df['due_date'] = meta_df['due_date'].apply(lambda x: pd.to_datetime(x).date())
+    meta_df['buffer_days'] = meta_df['buffer_days'].astype(int)
     
-    if df.empty or not metadata:
-        return df
-
-    metadata_df = pd.DataFrame.from_dict(metadata, orient='index')
-    metadata_df = metadata_df.reset_index().rename(columns={'index': '專案名稱'})
-    
-    metadata_df['due_date'] = metadata_df['due_date'].apply(lambda x: pd.to_datetime(x).date())
-    metadata_df['buffer_days'] = metadata_df['buffer_days'].astype(int)
-
-    df = pd.merge(df, metadata_df[['專案名稱', 'due_date', 'buffer_days']], on='專案名稱', how='left')
-
-    # 將 due_date 轉換為 Timestamp，才能減去 Timedelta
+    df = pd.merge(df, meta_df[['專案名稱', 'due_date', 'buffer_days']], on='專案名稱', how='left')
     df['due_date_ts'] = pd.to_datetime(df['due_date'])
-
-    # 計算最慢到貨日 (Timestamp - Timedelta)，並轉回字串
-    df['採購最慢到貨日_NEW'] = (
-        df['due_date_ts'] - 
-        df['buffer_days'].apply(lambda x: timedelta(days=x) if pd.notna(x) and x is not None else timedelta(days=0))
-    ).dt.strftime('%Y-%m-%d')
-    
-    df['採購最慢到貨日'] = df['採購最慢到貨日_NEW']
-    
-    df = df.drop(columns=['due_date', 'buffer_days', '採購最慢到貨日_NEW', 'due_date_ts'], errors='ignore') 
-    
-    return df
-# *--- 3. 輔助函式區 ---*
-# ******************************
-
-
-# ******************************
-# *--- 4. 邏輯處理函式 ---*
-# ******************************
+    df['採購最慢到貨日'] = (df['due_date_ts'] - df['buffer_days'].apply(lambda x: timedelta(days=x))).dt.strftime('%Y-%m-%d')
+    return df.drop(columns=['due_date', 'buffer_days', 'due_date_ts'], errors='ignore')
 
 def handle_master_save():
-    """批次處理所有 data_editor 的修改，並重新計算總價、更新個別報價時間戳記。"""
-    
     if not st.session_state.edited_dataframes:
-        st.info("沒有偵測到表格修改。")
+        st.info("無修改。")
         return
-
     main_df = st.session_state.data.copy()
-    current_time_str = datetime.now().strftime(DATETIME_FORMAT)
+    changed = False
     
-    # affected_projects = set() # 不再需要追蹤受影響的專案來更新時間
-    changes_detected = False
-    
-    # 確保 DataFrame 有 '最後修改時間' 欄位，如果沒有則建立並用空字串填充
-    if '最後修改時間' not in main_df.columns:
-        main_df['最後修改時間'] = ''
-
     for _, edited_df in st.session_state.edited_dataframes.items():
         if edited_df.empty: continue
-        
-        for index, new_row in edited_df.iterrows():
-            original_id = new_row['ID']
-            idx_in_main = main_df[main_df['ID'] == original_id].index
+        for _, new_row in edited_df.iterrows():
+            idx_in_main = main_df[main_df['ID'] == new_row['ID']].index
             if idx_in_main.empty: continue
-            
             main_idx = idx_in_main[0]
             
             row_changed = False
-
-            # --- 數據比較與更新 ---
+            # 日期更新
+            new_date = new_row['預計交貨日']
+            if pd.notna(new_date):
+                 new_date = pd.to_datetime(new_date).normalize()
+                 if main_df.loc[main_idx, '預計交貨日'] != new_date:
+                     main_df.loc[main_idx, '預計交貨日'] = new_date
+                     row_changed = True
             
-            # 處理 DateColumn 返回的 datetime 物件
-            new_delivery_date = new_row['預計交貨日']
-            if pd.notna(new_delivery_date):
-                 new_delivery_date = pd.to_datetime(new_delivery_date).normalize() 
-                 
-                 # 比較 datetime 物件
-                 if main_df.loc[main_idx, '預計交貨日'] != new_delivery_date:
-                    main_df.loc[main_idx, '預計交貨日'] = new_delivery_date
-                    row_changed = True
-
-            # 檢查其他可更新欄位
-            updatable_cols = ['選取', '供應商', '單價', '數量', '狀態', '標記刪除'] 
-            for col in updatable_cols:
-                 if str(main_df.loc[main_idx, col]) != str(new_row[col]):
+            # 其他欄位
+            for col in ['選取', '供應商', '單價', '數量', '狀態', '標記刪除']:
+                if str(main_df.loc[main_idx, col]) != str(new_row[col]):
                     main_df.loc[main_idx, col] = new_row[col]
                     row_changed = True
             
-            # 重新計算總價 (總是執行以確保數據一致)
-            current_price = float(main_df.loc[main_idx, '單價'])
-            current_qty = float(main_df.loc[main_idx, '數量'])
-            new_total = current_price * current_qty
-            
+            # 總價重算
+            new_total = float(main_df.loc[main_idx, '單價']) * float(main_df.loc[main_idx, '數量'])
             if main_df.loc[main_idx, '總價'] != new_total:
                 main_df.loc[main_idx, '總價'] = new_total
                 row_changed = True
             
             if row_changed:
-                changes_detected = True
-                # 【新功能】更新單個報價的最後修改時間
-                main_df.loc[main_idx, '最後修改時間'] = current_time_str
-                # proj = main_df.loc[main_idx, '專案名稱'] # 不再需要
-                # affected_projects.add(proj) # 不再需要
-                
-    if changes_detected:
+                main_df.loc[main_idx, '最後修改時間'] = datetime.now().strftime(DATETIME_FORMAT)
+                changed = True
+
+    if changed:
         st.session_state.data = main_df
-        
-        updated_metadata = st.session_state.project_metadata.copy()
-        # 【移除】不再更新專案的 last_modified 欄位
-        # for proj in affected_projects:
-        #     if proj in updated_metadata:
-        #         updated_metadata[proj]['last_modified'] = current_time_str 
-        
-        if write_data_to_sheets(st.session_state.data, updated_metadata):
-            st.session_state.project_metadata = updated_metadata
+        if write_data_to_sheets(main_df, st.session_state.project_metadata):
             st.session_state.edited_dataframes = {}
-            st.success("✅ 資料已儲存！總價、總預算及 Google Sheets 已更新。")
-        
-        st.rerun()
+            st.success("✅ 儲存成功！")
+            st.rerun()
     else:
-        st.info("沒有偵測到表格修改。")
-
-
-def get_current_delete_ids():
-    """輔助函式：從所有編輯器中匯總當前被標記刪除的 ID 列表。"""
-    delete_map = {}
-    
-    # 遍歷所有編輯器暫存檔
-    for edited_df in st.session_state.edited_dataframes.values():
-        if edited_df is not None and not edited_df.empty:
-            for _, row in edited_df.iterrows():
-                delete_map[row['ID']] = row['標記刪除']
-    
-    ids_to_delete = []
-    
-    # 比對原始數據與編輯狀態
-    for _, row in st.session_state.data.iterrows():
-        item_id = row['ID']
-        is_marked = delete_map.get(item_id, row['標記刪除'])
-        
-        if is_marked is True or str(is_marked).lower() == 'true':
-            ids_to_delete.append(item_id)
-            
-    return ids_to_delete
-
+        st.info("無修改。")
 
 def trigger_delete_confirmation():
-    """
-    第一步：鎖定目標。
-    點擊 '刪除已標記項目' 按鈕時，立刻計算並鎖定要刪除的 ID，存入 Session State。
-    """
+    ids = []
+    for edited_df in st.session_state.edited_dataframes.values():
+        if edited_df is not None:
+            for _, row in edited_df.iterrows():
+                if row['標記刪除']: ids.append(row['ID'])
     
-    # 1. 獲取當前勾選的 ID
-    ids_to_delete = get_current_delete_ids()
-    
-    if not ids_to_delete:
-        st.warning("沒有項目被標記為刪除。請先在表格中勾選 '刪除?' 欄位。")
-        st.session_state.show_delete_confirm = False
-        if 'pending_delete_ids' in st.session_state:
-            del st.session_state.pending_delete_ids
+    if not ids:
+        st.warning("請先勾選 '刪除?'。")
         return
-
-    # 2. 將 ID 列表「鎖定」存入 session_state，供下一步使用
-    st.session_state.pending_delete_ids = ids_to_delete
-    st.session_state.delete_count = len(ids_to_delete)
+        
+    st.session_state.pending_delete_ids = ids
+    st.session_state.delete_count = len(ids)
     st.session_state.show_delete_confirm = True
     st.rerun()
 
-
 def handle_batch_delete_quotes():
-    """
-    第二步：執行刪除。
-    直接讀取第一步鎖定的 ID 列表進行刪除，確保操作一致性。
-    """
-    
-    # 1. 從 Session State 讀取「鎖定」的 ID 列表
-    ids_to_delete = st.session_state.get('pending_delete_ids', [])
-    
-    if not ids_to_delete:
+    ids = st.session_state.get('pending_delete_ids', [])
+    if not ids:
         st.session_state.show_delete_confirm = False
-        st.warning("刪除操作過期或未找到目標，請重新勾選並執行。")
         st.rerun()
         return
 
-    # 2. 執行刪除：保留 ID 不在刪除列表中的項目
     main_df = st.session_state.data
-    df_after_delete = main_df[~main_df['ID'].isin(ids_to_delete)].reset_index(drop=True)
+    quotes_to_del = main_df[main_df['ID'].isin(ids)]
     
-    # 3. 更新 Session State
-    st.session_state.data = df_after_delete
+    success = True
+    for _, row in quotes_to_del.iterrows():
+        if str(row.get('附件', '')).strip():
+            if not delete_file_from_gcs(str(row.get('附件', '')).strip()): success = False
     
-    # 4. 寫入 Google Sheets
+    st.session_state.data = main_df[~main_df['ID'].isin(ids)].reset_index(drop=True)
+    
     if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
         st.session_state.show_delete_confirm = False
-        st.success(f"✅ 已成功刪除 {len(ids_to_delete)} 筆報價。Sheets 已更新。")
-        
-        # 清除編輯暫存與鎖定的 ID
-        st.session_state.edited_dataframes = {} 
-        if 'pending_delete_ids' in st.session_state:
-            del st.session_state.pending_delete_ids
-    
-    st.rerun()
-
-
-def handle_project_modification():
-    """處理修改專案設定的邏輯"""
-    target_proj = st.session_state.edit_target_project
-    new_name = st.session_state.edit_new_name
-    # new_date = st.session_state.edit_new_date # 移除編輯日期
-    current_time_str = datetime.now().strftime(DATETIME_FORMAT)
-    
-    if not new_name:
-        st.error("專案名稱不能為空")
-        return
-        
-    if target_proj != new_name and new_name in st.session_state.project_metadata:
-        st.error(f"新的專案名稱 '{new_name}' 已存在，請使用不同名稱。")
-        return
-
-    meta = st.session_state.project_metadata.pop(target_proj)
-    # meta['due_date'] = new_date # 移除編輯日期
-    # meta['last_modified'] = current_time_str # 【移除】不再更新專案的 last_modified
-    st.session_state.project_metadata[new_name] = meta
-    
-    st.session_state.data.loc[st.session_state.data['專案名稱'] == target_proj, '專案名稱'] = new_name
-    
-    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.success(f"✅ 專案已更新：{new_name}。Sheets 已更新。")
-    
-    st.rerun()
-
-
-def handle_delete_project(project_to_delete):
-    """刪除選定的專案及其所有相關報價。"""
-    
-    if not project_to_delete:
-        st.error("請選擇要刪除的專案。")
-        return
-
-    if project_to_delete in st.session_state.project_metadata:
-        del st.session_state.project_metadata[project_to_delete]
-
-    initial_count = len(st.session_state.data)
-    st.session_state.data = st.session_state.data[
-        st.session_state.data['專案名稱'] != project_to_delete
-    ].reset_index(drop=True)
-    
-    deleted_count = initial_count - len(st.session_state.data)
-
-    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.success(f"✅ 專案 **{project_to_delete}** 及其相關的 {deleted_count} 筆報價已成功刪除。Sheets 已更新。")
-    
-    st.rerun()
-
+        st.session_state.edited_dataframes = {}
+        msg = f"✅ 已刪除 {len(ids)} 筆。"
+        if not success: msg += " (部分附件刪除失敗)"
+        st.success(msg)
+        st.rerun()
 
 def handle_add_new_project():
-    """處理新增專案設定的邏輯"""
-    project_name = st.session_state.new_proj_name
-    project_due_date = st.session_state.new_proj_due_date
-    buffer_days = st.session_state.new_proj_buffer_days
-    current_time_str = datetime.now().strftime(DATETIME_FORMAT)
-
-    if not project_name:
-        st.error("專案名稱不能為空。")
+    name = st.session_state.new_proj_name
+    if not name:
+        st.error("名稱不能為空")
         return
-        
-    # 如果專案已存在，則更新其時程
-    if project_name in st.session_state.project_metadata:
-        st.warning(f"專案 '{project_name}' 已存在，將更新其時程設定。")
-    
-    st.session_state.project_metadata[project_name] = {
-        'due_date': project_due_date, 
-        'buffer_days': buffer_days,
-        'last_modified': current_time_str # 僅在新增/設定時更新此元數據
+    st.session_state.project_metadata[name] = {
+        'due_date': st.session_state.new_proj_due_date,
+        'buffer_days': st.session_state.new_proj_buffer_days,
+        'last_modified': datetime.now().strftime(DATETIME_FORMAT)
     }
-    
-    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.success(f"✅ 已新增/更新專案設定：{project_name}。Sheets 已更新。")
-    
+    write_data_to_sheets(st.session_state.data, st.session_state.project_metadata)
+    st.success(f"✅ 專案 {name} 設定已儲存")
     st.rerun()
 
-
-def handle_add_new_quote(latest_arrival_date):
-    """處理新增報價的邏輯"""
-    project_name = st.session_state.quote_project_select
-    item_name_to_use = st.session_state.item_name_to_use_final
-    supplier = st.session_state.quote_supplier
-    price = st.session_state.quote_price
-    qty = st.session_state.quote_qty
-    status = st.session_state.quote_status
-
-    current_time_str = datetime.now().strftime(DATETIME_FORMAT)
-    
-    if st.session_state.quote_date_type == "1. 指定日期":
-        final_delivery_date = st.session_state.quote_delivery_date
-    else:
-        final_delivery_date = st.session_state.calculated_delivery_date 
-
-    if not project_name or not item_name_to_use:
-        st.error("請確認已輸入專案名稱並選擇或輸入採購項目名稱。")
+def handle_add_new_quote(latest_arrival):
+    proj = st.session_state.quote_project_select
+    item = st.session_state.item_name_to_use_final
+    if not proj or not item:
+        st.error("請填寫專案與項目")
         return
-    if project_name not in st.session_state.project_metadata:
-        st.error(f"專案 '{project_name}' 的時程設定不存在。請先在 '➕ 新增專案' 區塊設定該專案的交期。")
-        return
-        
-    total_price = price * qty
     
-    # st.session_state.project_metadata[project_name]['last_modified'] = current_time_str # 【移除】不再更新專案的 last_modified
-
+    delivery = st.session_state.quote_delivery_date if st.session_state.quote_date_type == "1. 指定日期" else st.session_state.calculated_delivery_date
+    
     new_row = {
-        'ID': st.session_state.next_id, '選取': False, '專案名稱': project_name, 
-        '專案項目': item_name_to_use, '供應商': supplier, '單價': price, '數量': qty, 
-        '總價': total_price, 
-        # DateColumn 需要 datetime 物件
-        '預計交貨日': pd.to_datetime(final_delivery_date).normalize(), 
-        '狀態': status, 
-        # DateColumn 需要 datetime 物件
-        '採購最慢到貨日': pd.to_datetime(latest_arrival_date).normalize(), 
-        '標記刪除': False,
-        # 【新功能】新增報價的最後修改時間
-        '最後修改時間': current_time_str, 
+        'ID': st.session_state.next_id, '選取': False, '專案名稱': proj, 
+        '專案項目': item, '供應商': st.session_state.quote_supplier, 
+        '單價': st.session_state.quote_price, '數量': st.session_state.quote_qty, 
+        '總價': st.session_state.quote_price * st.session_state.quote_qty, 
+        '預計交貨日': pd.to_datetime(delivery).normalize(), 
+        '狀態': st.session_state.quote_status, 
+        '採購最慢到貨日': pd.to_datetime(latest_arrival).normalize(), 
+        '標記刪除': False, '最後修改時間': datetime.now().strftime(DATETIME_FORMAT), '附件': ""
     }
     st.session_state.next_id += 1
     st.session_state.data = pd.concat([st.session_state.data, pd.DataFrame([new_row])], ignore_index=True)
-    
-    if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
-        st.success(f"✅ 已新增報價至 {project_name}！Sheets 已更新。")
-    
+    write_data_to_sheets(st.session_state.data, st.session_state.project_metadata)
+    st.success("✅ 報價新增成功")
     st.rerun()
 
-# *--- 4. 邏輯處理函式 - 結束 ---*
-
-
-# ******************************
-# *--- 5. Session State 初始化函式 ---*
-# ******************************
-def initialize_session_state():
-    """初始化所有 Streamlit Session State 變數。"""
-    today = datetime.now().date()
+def handle_project_modification():
+    old = st.session_state.edit_target_project
+    new = st.session_state.edit_new_name
+    if not new: return
     
-    if 'data' not in st.session_state or 'project_metadata' not in st.session_state:
-        data_df, metadata_dict = load_data_from_sheets()
-        
-        st.session_state.data = data_df
-        st.session_state.project_metadata = metadata_dict
-        
-    if '標記刪除' not in st.session_state.data.columns:
-        st.session_state.data['標記刪除'] = False
-            
-    if 'next_id' not in st.session_state:
-        st.session_state.next_id = st.session_state.data['ID'].max() + 1 if not st.session_state.data.empty and pd.notna(st.session_state.data['ID'].max()) else 1
+    meta = st.session_state.project_metadata.pop(old)
+    st.session_state.project_metadata[new] = meta
+    st.session_state.data.loc[st.session_state.data['專案名稱'] == old, '專案名稱'] = new
+    write_data_to_sheets(st.session_state.data, st.session_state.project_metadata)
+    st.rerun()
+
+def handle_delete_project(proj):
+    # 刪附件
+    for _, row in st.session_state.data[st.session_state.data['專案名稱'] == proj].iterrows():
+        delete_file_from_gcs(str(row.get('附件', '')).strip())
     
-    if 'edited_dataframes' not in st.session_state: st.session_state.edited_dataframes = {}
-    if 'calculated_delivery_date' not in st.session_state: st.session_state.calculated_delivery_date = today
-    if 'show_delete_confirm' not in st.session_state: st.session_state.show_delete_confirm = False
-    if 'delete_count' not in st.session_state: st.session_state.delete_count = 0
-# *--- 5. Session State 初始化函式 ---*
-# ******************************
+    if proj in st.session_state.project_metadata: del st.session_state.project_metadata[proj]
+    st.session_state.data = st.session_state.data[st.session_state.data['專案名稱'] != proj].reset_index(drop=True)
+    write_data_to_sheets(st.session_state.data, st.session_state.project_metadata)
+    st.rerun()
 
 
 # ******************************
-# *--- 6. 模組化渲染函數 ---*
+# *--- 6. UI 渲染 (Components) ---*
 # ******************************
 
 def render_sidebar_ui(df, project_metadata, today):
-    """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
-    
     with st.sidebar:
-        
-        # --- 區塊 1: 修改/刪除專案 ---
-        with st.expander("✏️ 修改/刪除專案資訊", expanded=False): 
-            all_projects = sorted(list(project_metadata.keys()))
-            
-            if all_projects:
-                target_proj = st.selectbox("選擇目標專案", all_projects, key="edit_target_project")
-                
-                operation = st.selectbox(
-                    "選擇操作項目", 
-                    ("修改專案資訊", "刪除專案"), 
-                    key="project_operation_select",
-                    help="選擇 '刪除專案' 將永久移除專案及其所有報價。"
-                )
-                
-                st.markdown("---")
-                
-                if operation == "修改專案資訊":
-                    st.markdown("##### ✏️ 專案資訊修改")
-                    st.text_input("新專案名稱", value=target_proj, key="edit_new_name")
-                    
-                    if st.button("確認修改專案名稱", type="primary", use_container_width=True): 
-                        handle_project_modification()
-                
-                elif operation == "刪除專案":
-                    st.markdown("##### 🗑️ 專案刪除 (⚠️ 警告)")
-                    st.warning(f"您即將永久刪除專案 **{target_proj}** 及其所有相關報價資料。")
-                    
-                    if st.button(f"確認永久刪除 {target_proj}", type="secondary", help="此操作不可逆，將同時移除所有相關報價", use_container_width=True):
-                        handle_delete_project(target_proj)
-                        
-            else: 
-                st.info("無專案可修改/刪除。請在下方新增專案。")
-        
-        
-        # --- 區塊 2: 新增/設定專案時程 ---
-        with st.expander("➕ 新增/設定專案時程", expanded=False): 
-            st.info("💡 若輸入現有專案名稱，將更新該專案的交貨日與緩衝天數。")
-            
-            st.text_input("專案名稱 (Project Name)", key="new_proj_name")
-            
-            project_due_date = st.date_input("專案交貨日 (Project Due Date)", value=today + timedelta(days=30), key="new_proj_due_date")
-            buffer_days = st.number_input("採購緩衝天數 (天)", min_value=0, value=7, key="new_proj_buffer_days")
-            
-            latest_arrival_date_proj = project_due_date - timedelta(days=int(buffer_days))
-            st.caption(f"計算得出最慢到貨日：{latest_arrival_date_proj.strftime('%Y年%m月%d日')}")
+        with st.expander("✏️ 修改/刪除專案", expanded=False):
+            projs = sorted(list(project_metadata.keys()))
+            if projs:
+                t = st.selectbox("目標專案", projs, key="edit_target_project")
+                op = st.selectbox("操作", ("修改專案資訊", "刪除專案"), key="project_operation_select")
+                if op == "修改專案資訊":
+                    st.text_input("新名稱", value=t, key="edit_new_name")
+                    if st.button("確認修改"): handle_project_modification()
+                else:
+                    st.warning(f"將刪除 {t} 及所有報價")
+                    if st.button("確認刪除", type="secondary"): handle_delete_project(t)
+            else: st.info("無專案")
 
-            if st.button("💾 儲存專案設定", key="btn_save_proj", use_container_width=True):
-                handle_add_new_project()
-        
-        
-        # --- 區塊 3: 新增報價 ---
-        with st.expander("➕ 新增報價", expanded=False): 
-            all_projects_for_quote = sorted(list(project_metadata.keys()))
-            latest_arrival_date = today 
-            
-            if not all_projects_for_quote:
-                st.warning("請先在上方新增/設定專案時程。")
-                project_name = None
+        with st.expander("➕ 設定專案時程", expanded=False):
+            st.text_input("專案名稱", key="new_proj_name")
+            d = st.date_input("交貨日", value=today+timedelta(30), key="new_proj_due_date")
+            b = st.number_input("緩衝天數", 0, value=7, key="new_proj_buffer_days")
+            st.caption(f"最慢到貨: {(d - timedelta(b)).strftime(DATE_FORMAT)}")
+            if st.button("儲存設定"): handle_add_new_project()
+
+        with st.expander("➕ 新增報價", expanded=False):
+            projs = sorted(list(project_metadata.keys()))
+            if not projs: st.warning("請先新增專案")
             else:
-                project_name = st.selectbox("選擇目標專案", all_projects_for_quote, key="quote_project_select")
+                p = st.selectbox("專案", projs, key="quote_project_select")
+                meta = project_metadata.get(p, {'due_date': today, 'buffer_days': 7})
+                latest = meta['due_date'] - timedelta(int(meta['buffer_days']))
+                st.caption(f"最慢: {latest}")
                 
-                current_meta = project_metadata.get(project_name, {'due_date': today, 'buffer_days': 7})
-                buffer_days = current_meta['buffer_days']
-                latest_arrival_date = current_meta['due_date'] - timedelta(days=int(buffer_days))
-
-                st.caption(f"專案最慢到貨日: {latest_arrival_date.strftime(DATE_FORMAT)}")
-
-            st.markdown("##### 採購項目選擇")
-            
-            unique_items = sorted(df['專案項目'].unique().tolist())
-            item_options = ['🆕 新增項目...'] + unique_items 
-
-            selected_item = st.selectbox("選擇現有項目", item_options, key="quote_item_select")
-
-            item_name_to_use = None
-            if selected_item == '🆕 新增項目...':
-                item_name_to_use = st.text_input("輸入新的採購項目名稱", key="quote_item_new_input")
-            else:
-                item_name_to_use = selected_item
-            
-            st.session_state.item_name_to_use_final = item_name_to_use
-            
-            st.text_input("供應商名稱", key="quote_supplier")
-            
-            # 修正: 單價改為整數輸入 (min_value=0, step=1)
-            st.number_input("單價 (TWD)", min_value=0, step=1, key="quote_price") 
-            
-            st.number_input("數量", min_value=1, value=1, key="quote_qty")
-            
-            st.markdown("##### 預計交貨日輸入")
-            date_input_type = st.radio("選擇輸入方式", ("1. 指定日期", "2. 自然日數", "3. 工作日數"), key="quote_date_type", horizontal=True)
-
-            if date_input_type == "1. 指定日期": 
-                final_delivery_date = st.date_input("選擇確切交貨日期", today, key="quote_delivery_date") 
-            
-            elif date_input_type == "2. 自然日數": 
-                num_days = st.number_input("自然日數", min_value=1, value=7, key="quote_num_days_input")
-                final_delivery_date = today + timedelta(days=int(num_days))
-                st.session_state.calculated_delivery_date = final_delivery_date 
+                items = sorted(df['專案項目'].unique().tolist())
+                sel_i = st.selectbox("項目", ['🆕 新增...'] + items, key="quote_item_select")
+                if sel_i == '🆕 新增...': st.text_input("新項目名稱", key="quote_item_new_input")
+                else: st.session_state.item_name_to_use_final = sel_i
                 
-            elif date_input_type == "3. 工作日數": 
-                num_b_days = st.number_input("工作日數", min_value=1, value=5, key="quote_num_days_input")
-                final_delivery_date = add_business_days(today, int(num_b_days))
-                st.session_state.calculated_delivery_date = final_delivery_date
-            
-            if date_input_type != "1. 指定日期":
-                final_delivery_date = st.session_state.calculated_delivery_date
-                st.caption(f"計算得出的交期：{final_delivery_date.strftime(DATE_FORMAT)}")
+                st.text_input("供應商", key="quote_supplier")
+                st.number_input("單價", 0, step=1, key="quote_price")
+                st.number_input("數量", 1, value=1, key="quote_qty")
+                
+                dt_type = st.radio("交期", ("1. 指定日期", "2. 自然日數", "3. 工作日數"), horizontal=True, key="quote_date_type")
+                if dt_type == "1. 指定日期": st.date_input("日期", today, key="quote_delivery_date")
+                elif dt_type == "2. 自然日數": 
+                    n = st.number_input("天數", 1, value=7, key="quote_num_days_input")
+                    st.session_state.calculated_delivery_date = today + timedelta(n)
+                else:
+                    n = st.number_input("天數", 1, value=5, key="quote_num_days_input")
+                    st.session_state.calculated_delivery_date = add_business_days(today, n)
+                
+                st.selectbox("狀態", STATUS_OPTIONS, key="quote_status")
+                if st.button("新增資料", type="primary"): handle_add_new_quote(latest)
 
-            st.selectbox("目前狀態", STATUS_OPTIONS, key="quote_status")
-            
-            if st.button("📥 新增資料", key="btn_add_quote", type="primary", use_container_width=True):
-                handle_add_new_quote(latest_arrival_date)
-
-
-        # 恢復 V2.1.6 原始登出按鈕位置
-        st.button("🚪 登出系統", on_click=logout, type="secondary", key="sidebar_logout_btn")
-
+        st.button("🚪 登出", on_click=logout, type="secondary")
 
 def render_dashboard(df, project_metadata):
-    """渲染頂部儀表板區塊。"""
-    
-    # *--- render_dashboard - 儀表板區塊 ---*
-    total_projects, total_budget, risk_items, pending_quotes = calculate_dashboard_metrics(df, project_metadata)
-
+    tp, tb, ri, pq = calculate_dashboard_metrics(df, project_metadata)
     st.subheader("📊 總覽儀表板")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown(f"""
-        <div class='metric-box' style='background-color:#33343c;'>
-            <div class='metric-title'>專案總數</div>
-            <div class='metric-value'>{total_projects}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div class='metric-box' style='background-color:#1b4d3e;'>
-            <div class='metric-title'>預估/已選總預算</div>
-            <div class='metric-value'>${total_budget:,.0f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col3:
-        st.markdown(f"""
-        <div class='metric-box' style='background-color:#5a2a2a;'>
-            <div class='metric-title'>交期風險項目</div>
-            <div class='metric-value'>{risk_items}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col4:
-        st.markdown(f"""
-        <div class='metric-box' style='background-color:#2a3b5a;'>
-            <div class='metric-title'>待處理報價數量</div>
-            <div class='metric-value'>{pending_quotes}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(f"<div class='metric-box' style='background:#33343c;'><div class='metric-title'>專案數</div><div class='metric-value'>{tp}</div></div>", unsafe_allow_html=True)
+    c2.markdown(f"<div class='metric-box' style='background:#1b4d3e;'><div class='metric-title'>總預算</div><div class='metric-value'>${tb:,.0f}</div></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='metric-box' style='background:#5a2a2a;'><div class='metric-title'>風險項</div><div class='metric-value'>{ri}</div></div>", unsafe_allow_html=True)
+    c4.markdown(f"<div class='metric-box' style='background:#2a3b5a;'><div class='metric-title'>待處理</div><div class='metric-value'>{pq}</div></div>", unsafe_allow_html=True)
     st.markdown("---")
-    # *--- render_dashboard - 儀表板區塊 - 結束 ---*
-
 
 def render_batch_operations():
-    """渲染儲存/刪除按鈕及確認對話框。"""
+    c1, c2 = st.columns([0.8, 0.2])
+    locked = st.session_state.show_delete_confirm
+    if c1.button("💾 儲存修改", type="primary", disabled=locked): handle_master_save()
+    if c2.button("🔴 刪除標記", type="secondary", disabled=locked): trigger_delete_confirmation()
     
-    col_save, col_delete = st.columns([0.8, 0.2])
-    
-    is_locked = st.session_state.show_delete_confirm
-    
-    with col_save:
-        if st.button("💾 儲存表格修改並計算總價/預算", type="primary", disabled=is_locked):
-            handle_master_save()
-            
-    with col_delete:
-        if st.button("🔴 刪除已標記項目", type="secondary", disabled=is_locked, key="btn_trigger_delete"):
-            trigger_delete_confirmation()
-
-    # 模擬確認對話框
     if st.session_state.show_delete_confirm:
-        st.error(f"⚠️ 確認永久刪除 **{st.session_state.delete_count}** 筆已標記的報價嗎？此操作不可逆！")
+        st.error(f"確認刪除 {st.session_state.delete_count} 筆？")
+        c_y, c_n = st.columns([0.2, 0.8])
+        if c_y.button("✅ 確認"): handle_batch_delete_quotes()
+        if c_n.button("❌ 取消"): 
+            st.session_state.show_delete_confirm = False
+            st.rerun()
+    st.markdown("---")
+
+def render_project_tables(df, project_metadata):
+    if df.empty:
+        st.info("無數據")
+        return
+
+    # 初始化預覽 ID
+    if 'preview_from_table_id' not in st.session_state:
+        st.session_state.preview_from_table_id = None
         
-        col_confirm_yes, col_confirm_no, _ = st.columns([0.2, 0.2, 0.6])
+    current_preview_id = st.session_state.preview_from_table_id
+
+    for proj_name, proj_data in df.groupby('專案名稱'):
+        meta = project_metadata.get(proj_name, {})
+        budget = calculate_project_budget(df, proj_name)
         
-        with col_confirm_yes:
-            if st.button("✅ 確認刪除", key="confirm_delete_yes", type="primary"):
-                handle_batch_delete_quotes()
+        try: dd = meta.get('due_date').strftime(DATE_FORMAT)
+        except: dd = str(meta.get('due_date'))
         
-        with col_confirm_no:
-            if st.button("❌ 取消", key="confirm_delete_no"):
-                st.session_state.show_delete_confirm = False
+        try: ld = (meta.get('due_date') - timedelta(int(meta.get('buffer_days', 7)))).strftime(DATE_FORMAT)
+        except: ld = "N/A"
+
+        with st.expander(f"專案：{proj_name}", expanded=False):
+            st.markdown(f"<span class='project-header'>預算: ${budget:,.0f} | 交期: {dd} | 最慢: {ld}</span>", unsafe_allow_html=True)
+            st.caption("💡 提示：勾選 **「預覽」** 欄位可查看附件 (單選)。")
+
+            for item_name, item_data in proj_data.groupby('專案項目'):
+                st.markdown(f"<span class='item-header'>📦 {item_name}</span>", unsafe_allow_html=True)
+                
+                edf = item_data.copy()
+                if '預計交貨日' in edf.columns:
+                    edf['預計交貨日'] = pd.to_datetime(edf['預計交貨日'], errors='coerce').apply(lambda x: x.date() if pd.notnull(x) else None)
+                if '採購最慢到貨日' in edf.columns:
+                    edf['採購最慢到貨日'] = pd.to_datetime(edf['採購最慢到貨日'], errors='coerce').apply(lambda x: x.date() if pd.notnull(x) else None)
+                
+                if '最後修改時間' not in edf: edf['最後修改時間'] = ''
+                
+                # 附件顯示處理
+                edf['附件名稱'] = edf['附件'].apply(lambda x: os.path.basename(x) if x else '')
+                
+                # *** 單選核心邏輯：根據 State 設定 Checkbox ***
+                edf['預覽'] = edf['ID'].apply(lambda x: True if x == current_preview_id else False)
+
+                col_cfg = {
+                    "選取": st.column_config.CheckboxColumn(width="tiny"),
+                    "單價": st.column_config.NumberColumn(format="$%d"),
+                    "總價": st.column_config.NumberColumn(format="$%d", disabled=True),
+                    "預計交貨日": st.column_config.DateColumn(format="YYYY-MM-DD", step=1),
+                    "狀態": st.column_config.SelectboxColumn(options=STATUS_OPTIONS),
+                    "最後修改時間": st.column_config.TextColumn(disabled=True),
+                    "附件名稱": st.column_config.TextColumn(disabled=True, width="medium"),
+                    "預覽": st.column_config.CheckboxColumn(width="small", label="預覽(單選)"),
+                    "標記刪除": st.column_config.CheckboxColumn(width="tiny")
+                }
+                
+                editor_key = f"editor_{proj_name}_{item_name}"
+                edited_val = st.data_editor(
+                    edf, 
+                    column_order=['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '附件名稱', '預覽', '標記刪除'],
+                    column_config=col_cfg,
+                    key=editor_key,
+                    hide_index=True,
+                    use_container_width=True,
+                    disabled=st.session_state.show_delete_confirm
+                )
+                st.session_state.edited_dataframes[item_name] = edited_val
+
+                # *** 單選核心邏輯：偵測點擊並重整 ***
+                if '預覽' in edited_val.columns:
+                    checked = edited_val[edited_val['預覽'] == True]
+                    if not checked.empty:
+                        for _, row in checked.iterrows():
+                            # 如果這個 ID 與當前不同，代表是新點擊的 -> 更新 State 並重整
+                            if row['ID'] != current_preview_id:
+                                st.session_state.preview_from_table_id = row['ID']
+                                st.rerun()
+
+
+def render_attachment_module(df):
+    """
+    【UI 優化版】附件管理中心
+    使用卡片式佈局，移除複雜下拉選單，以表格點選為主。
+    """
+    st.markdown("---")
+    st.subheader("📎 報價附件管理中心")
+
+    # 1. 獲取當前選取的報價 ID
+    selected_id = st.session_state.get('preview_from_table_id', None)
+    
+    # 2. 如果沒有選取，顯示提示畫面
+    if selected_id is None:
+        st.info("👆 請在上方表格中勾選 **「預覽」** 欄位以檢視或上傳附件。")
+        return
+
+    # 3. 獲取該筆資料
+    try:
+        row = df[df['ID'] == selected_id].iloc[0]
+        proj_name = row['專案名稱']
+        item_name = row['專案項目']
+        supplier = row['供應商']
+        current_file_path = str(row.get('附件', '')).strip()
+        current_filename = os.path.basename(current_file_path) if current_file_path else None
+    except IndexError:
+        st.error("找不到該筆資料，可能已被刪除。")
+        st.session_state.preview_from_table_id = None
+        st.rerun()
+        return
+
+    # 4. UI 呈現：使用容器框住
+    with st.container(border=True):
+        # 標題列
+        col_header, col_close = st.columns([0.9, 0.1])
+        with col_header:
+            st.markdown(f"### 📦 {item_name} <span style='font-size:0.8em; color:gray'>({supplier})</span>", unsafe_allow_html=True)
+            st.caption(f"專案：{proj_name} | ID: {selected_id}")
+        with col_close:
+            if st.button("❌", help="關閉預覽"):
+                st.session_state.preview_from_table_id = None
                 st.rerun()
 
-    st.markdown("---")
-    
-    
-def render_project_tables(df, project_metadata):
-    """渲染主介面中所有專案的 Data Editor 表格。"""
-    
-    if df.empty:
-        st.info("目前沒有採購報價資料。")
-        return
-        
-    project_groups = df.groupby('專案名稱')
-    project_names = list(project_groups.groups.keys())
-    
-    is_locked = st.session_state.show_delete_confirm
+        st.markdown("---")
 
-    for i, proj_name in enumerate(project_names):
-        proj_data = project_groups.get_group(proj_name)
-        meta = project_metadata.get(proj_name, {})
-        proj_budget = calculate_project_budget(df, proj_name)
-        
-        # --- 計算最慢到貨日 (專案交期 - 緩衝天數) ---
-        # 確保 due_date 是 date 物件，以便進行計算
-        due_date_val = meta.get('due_date')
-        if isinstance(due_date_val, str):
-            try:
-                due_date_val = datetime.strptime(due_date_val, "%Y-%m-%d").date()
-            except:
-                due_date_val = datetime.now().date()
-        
-        # 取得緩衝天數並計算
-        buffer_days_val = int(meta.get('buffer_days', 7))
-        latest_arrival_proj = due_date_val - timedelta(days=buffer_days_val)
-        latest_arrival_str = latest_arrival_proj.strftime(DATE_FORMAT)
+        # 內容區：左側操作，右側預覽
+        col_action, col_preview = st.columns([1, 1.5], gap="large")
 
-        # 標題列
-        header_html = f"""
-        <span class='project-header'>💼 專案: {proj_name}</span> &nbsp;|&nbsp; 
-        <span class='project-header'>總預算: ${proj_budget:,.0f}</span> &nbsp;|&nbsp; 
-        <span class='meta-info'>交期: {meta.get('due_date')}</span> &nbsp;|&nbsp;
-        <span class='meta-info' style='color:#a8a8a8;'>⚠️ 最慢到貨: {latest_arrival_str}</span>
-        """
-        
-        # 建立 Expander key
-        expander_key = f"expander_{proj_name}"
-
-        # 監聽 Expander 點擊事件
-        with st.expander(label=f"專案：{proj_name} ", expanded=False): 
-            st.markdown(header_html, unsafe_allow_html=True)
+        with col_action:
+            st.markdown("#### 📤 附件操作")
             
-            for item_name, item_data in proj_data.groupby('專案項目'):
-                
-                has_selection = item_data['選取'].any()
-                sub_total = item_data[item_data['選取']]['總價'].sum() if has_selection else item_data['總價'].min()
-                calc_method = "(已選)" if has_selection else "(預估)"
-                
-                st.markdown(f"""
-                <span class='item-header'>📦 {item_name}</span> 
-                <span class='meta-info'> | 計入: ${sub_total:,.0f} {calc_method}</span>
-                """, unsafe_allow_html=True)
+            # 狀態顯示
+            if current_filename:
+                st.success(f"✅ 現有附件：**{current_filename}**")
+            else:
+                st.warning("⚠️ 目前尚無附件")
 
-                editable_df = item_data.copy()
-                
-                # 【關鍵修正】逐行清洗資料，確保只有 Python date 物件或 None
-                if '預計交貨日' in editable_df.columns:
-                    temp_series = pd.to_datetime(editable_df['預計交貨日'], errors='coerce')
-                    editable_df['預計交貨日'] = temp_series.apply(lambda x: x.date() if pd.notnull(x) else None)
-                
-                # 確保採購最慢到貨日也是純 date 格式
-                if '採購最慢到貨日' in editable_df.columns:
-                    temp_limit = pd.to_datetime(editable_df['採購最慢到貨日'], errors='coerce')
-                    editable_df['採購最慢到貨日'] = temp_limit.apply(lambda x: x.date() if pd.notnull(x) else None)
-                
-                # 確保 '最後修改時間' 欄位存在
-                if '最後修改時間' not in editable_df.columns:
-                    editable_df['最後修改時間'] = ''
+            # 上傳區
+            uploaded_file = st.file_uploader("上傳/更換附件 (JPG, PNG, PDF)", type=['png', 'jpg', 'jpeg', 'pdf'], key=f"uploader_{selected_id}")
+            
+            if uploaded_file:
+                if st.button("☁️ 確認上傳至 GCS", type="primary", use_container_width=True):
+                    new_path = save_uploaded_file(uploaded_file, selected_id)
+                    if new_path:
+                        # 更新 Session Data
+                        idx = st.session_state.data[st.session_state.data['ID'] == selected_id].index[0]
+                        st.session_state.data.loc[idx, '附件'] = new_path
+                        st.session_state.data.loc[idx, '最後修改時間'] = datetime.now().strftime(DATETIME_FORMAT)
+                        
+                        # 寫入 Sheets
+                        if write_data_to_sheets(st.session_state.data, st.session_state.project_metadata):
+                            st.toast("上傳成功！")
+                            time.sleep(1)
+                            st.rerun()
 
-                editor_key = f"editor_{proj_name}_{item_name}"
-                
-                # 【表格欄位調整】欄位顯示順序
-                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '標記刪除']
+        with col_preview:
+            st.markdown("#### 👁️ 內容預覽")
+            
+            if current_file_path:
+                try:
+                    # 使用 Signed URL 獲取安全連結
+                    client = get_gcs_signing_client()
+                    bucket = client.bucket(GCS_BUCKET_NAME)
+                    blob = bucket.blob(current_file_path)
+                    signed_url = blob.generate_signed_url(version="v4", expiration=timedelta(minutes=10), method="GET")
+                    
+                    ext = os.path.splitext(current_filename)[1].lower()
+                    if ext in ['.png', '.jpg', '.jpeg']:
+                        st.image(signed_url, caption=current_filename, use_container_width=True)
+                    elif ext == '.pdf':
+                        st.markdown(f'<iframe src="{signed_url}" width="100%" height="600"></iframe>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"📄 [下載檔案]({signed_url})")
+                        
+                except Exception as e:
+                    st.error(f"預覽失敗: {e}")
+            else:
+                st.info("無檔案可預覽")
 
-                # 使用 column_order 來控制顯示
-                edited_df_value = st.data_editor(
-                    editable_df,
-                    column_order=cols_to_display,
-                    column_config={
-                        "選取": st.column_config.CheckboxColumn("選取", width="tiny"), 
-                        "供應商": st.column_config.Column("供應商", disabled=False), 
-                        "單價": st.column_config.NumberColumn("單價", format="$%d"),
-                        "數量": st.column_config.NumberColumn("數量"),
-                        "總價": st.column_config.NumberColumn("總價", format="$%d", disabled=True),
-                        
-                        # 【日期欄位】純淨的日期，支援月曆選單
-                        "預計交貨日": st.column_config.DateColumn(
-                            "預計交貨日", 
-                            min_value=datetime(2020, 1, 1).date(),
-                            max_value=datetime(2030, 12, 31).date(),
-                            format="YYYY-MM-DD", 
-                            step=1,
-                            help="點擊兩下以開啟月曆選單"
-                        ),
-                        
-                        # 【判定欄位】獨立顯示判定圖示，禁止編輯
-                        "交期判定": st.column_config.Column("判定", width="tiny", help="❌: 延誤 / ✅: 準時", disabled=True),
-                        
-                        "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS_OPTIONS),
-                        
-                        # 【新欄位配置】
-                        "最後修改時間": st.column_config.TextColumn(
-                            "最後修改時間",
-                            disabled=True,
-                            width="medium",
-                            help="報價項目最後儲存的時間"
-                        ),
-                        
-                        "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny"), 
-                    },
-                    key=editor_key,
-                    hide_index=True, 
-                    use_container_width=True,
-                    height=150 + (len(item_data) * 35) if len(item_data) > 3 else 150,
-                    disabled=is_locked
-                )
-                
-                st.session_state.edited_dataframes[item_name] = edited_df_value 
-                st.markdown("---")
-    
-    # *** 資料匯出區塊 ***
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.subheader("💾 資料匯出")
-    st.download_button("📥 下載 Excel 報表", 
-                      convert_df_to_excel(df), 
-                      f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
-                      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 # ******************************
-# *--- 7. 主應用程式核心邏輯 ---*
+# *--- 7. 主程式邏輯 ---*
 # ******************************
 
 def run_app():
-    """運行應用程式的核心邏輯，在成功登入後調用。"""
-    
-    if 'expander_states' not in st.session_state:
-        st.session_state.expander_states = {}
+    # 初始化
+    if 'data' not in st.session_state:
+        df, meta = load_data_from_sheets()
+        st.session_state.data = df
+        st.session_state.project_metadata = meta
+        st.session_state.next_id = df['ID'].max() + 1 if not df.empty else 1
+        st.session_state.edited_dataframes = {}
+        st.session_state.show_delete_confirm = False
+        st.session_state.preview_from_table_id = None
 
+    # 自動計算
+    st.session_state.data = calculate_latest_arrival_dates(st.session_state.data, st.session_state.project_metadata)
+    
+    # 判斷交期
+    def judge(row):
+        try:
+            d = pd.to_datetime(row['預計交貨日'])
+            l = pd.to_datetime(row['採購最慢到貨日'])
+            if pd.isna(d) or pd.isna(l): return ""
+            return "❌" if d.date() > l.date() else "✅"
+        except: return ""
+    
+    if not st.session_state.data.empty:
+        st.session_state.data['交期判定'] = st.session_state.data.apply(judge, axis=1)
+
+    # 渲染畫面
+    df = st.session_state.data
+    meta = st.session_state.project_metadata
+    today = datetime.now().date()
+    
     st.title(f"🛠️ 專案採購管理工具 {APP_VERSION}") 
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     
-    # 【CSS 修正】強制將日曆圖示反轉為亮色 (invert 100%)，解決深色模式下看不清的問題
-    st.markdown("""
-        <style>
-        [data-testid="stDataFrame"] input[type="date"]::-webkit-calendar-picker-indicator {
-            filter: invert(1);
-            cursor: pointer;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-
-    initialize_session_state()
-
-    # 數據自動計算
-    st.session_state.data = calculate_latest_arrival_dates(
-        st.session_state.data, 
-        st.session_state.project_metadata
-    )
-    
-    if st.session_state.get('data_load_failed', False):
-        st.warning("應用程式無法從 Google Sheets 載入數據，請檢查上方錯誤訊息。")
-        
-    # --- UI 核心邏輯開始 ---
-    
-    # 【判定邏輯更新】
-    def get_date_judgment_icon(row):
-        try:
-            d_val = pd.to_datetime(row['預計交貨日'])
-            l_val = pd.to_datetime(row['採購最慢到貨日'])
-            
-            if pd.isna(d_val) or pd.isna(l_val):
-                return ""
-                
-            # 若 預計交貨日 > 最慢到貨日 -> 延遲 (❌)
-            if d_val.date() > l_val.date():
-                return "❌" 
-            else:
-                return "✅" 
-        except:
-            return ""
-
-    if not st.session_state.data.empty:
-        # 建立 '交期判定'
-        st.session_state.data['交期判定'] = st.session_state.data.apply(get_date_judgment_icon, axis=1)
-        
-        # 確保 '最後修改時間' 欄位存在
-        if '最後修改時間' not in st.session_state.data.columns:
-            st.session_state.data['最後修改時間'] = ''
-
-    df = st.session_state.data
-    project_metadata = st.session_state.project_metadata
-    today = datetime.now().date()
-    
-    # 渲染所有區塊
-    render_sidebar_ui(df, project_metadata, today)
-    render_dashboard(df, project_metadata)
+    render_sidebar_ui(df, meta, today)
+    render_dashboard(df, meta)
     render_batch_operations()
-    render_project_tables(df, project_metadata) 
-
-# ******************************
-# *--- 8. 程式入口點 ---*
-# ******************************
+    render_project_tables(df, meta)
+    render_attachment_module(df) # 新版 UI
 
 def main():
-    
-    st.markdown(CUSTOM_CSS, unsafe_allow_html=True) 
-        
     login_form()
-    
-    if st.session_state.authenticated:
-        run_app() 
-        
+    if st.session_state.get("authenticated", False):
+        run_app()
+
 if __name__ == "__main__":
     main()
-
-
