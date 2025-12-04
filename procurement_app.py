@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, date 
-from io import BytesIO
+# 移除 unused import: from io import BytesIO 
 import os 
 import json
 import gspread
@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # 版本號
-APP_VERSION = "V2.4.1 (Fix Upload)" 
+APP_VERSION = "V2.4.2 (Remove Export)" 
 
 # 時間格式
 DATE_FORMAT = "%Y-%m-%d"
@@ -150,7 +150,6 @@ def get_gcs_client_standard():
     """獲取標準 GCS Client (用於一般上傳/刪除)。"""
     return storage.Client()
 
-# 【修正】將函式名稱統一為 save_uploaded_file，解決 NameError
 def save_uploaded_file(uploaded_file, quote_id):
     """上傳檔案至 GCS。"""
     if uploaded_file is None: return None
@@ -188,14 +187,7 @@ def add_business_days(start_date, num_days):
         if current_date.weekday() < 5: days_added += 1
     return current_date
 
-@st.cache_data
-def convert_df_to_excel(df):
-    """DataFrame 轉 Excel。"""
-    df_export = df.drop(columns=['標記刪除', '交期顯示', '預覽', '附件名稱'], errors='ignore') 
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export.to_excel(writer, index=False, sheet_name='採購報價總表')
-    return output.getvalue()
+# 移除 convert_df_to_excel 函式 (已不需要)
 
 
 # ******************************
@@ -672,9 +664,7 @@ def render_project_tables(df, project_metadata):
                                 st.session_state.preview_from_table_id = row['ID']
                                 st.rerun()
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.subheader("💾 資料匯出")
-    st.download_button("📥 下載 Excel", convert_df_to_excel(df), f'report_{datetime.now().strftime("%Y%m%d")}.xlsx')
+    # 移除下載區塊
 
 
 def render_attachment_module(df):
