@@ -1318,9 +1318,11 @@ def render_project_tables(df, project_metadata):
     
     is_locked = st.session_state.show_delete_confirm
     
-    # 清除舊的 query params 邏輯，改用 session state
+    # 確保 session state 中有記錄預覽 ID 和選取狀態的變數
     if 'preview_from_table_id' not in st.session_state:
         st.session_state.preview_from_table_id = None
+    if 'editor_selections' not in st.session_state:
+        st.session_state.editor_selections = {}
 
     for i, proj_name in enumerate(project_names):
         proj_data = project_groups.get_group(proj_name)
@@ -1353,6 +1355,7 @@ def render_project_tables(df, project_metadata):
         # 監聽 Expander 點擊事件
         with st.expander(label=f"專案：{proj_name} (點擊展開)", expanded=False): 
             st.markdown(header_html, unsafe_allow_html=True)
+            st.caption("💡 提示：點擊表格中的任一行即可在下方預覽附件。")
             
             for item_name, item_data in proj_data.groupby('專案項目'):
                 
@@ -1381,16 +1384,14 @@ def render_project_tables(df, project_metadata):
 
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                # 【新增功能：預覽勾選框】
-                # 新增一個 '預覽' 欄位，預設為 False。
-                # 我們不顯示檔名連結，改顯示檔名文字 (唯讀) + 預覽勾選框
+                # 【顯示附件檔名】
                 editable_df['附件名稱'] = editable_df['附件'].apply(lambda x: os.path.basename(x) if x else '')
-                editable_df['預覽'] = False
                 
                 # 【修正點 3】表格欄位顯示順序
-                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '附件名稱', '預覽', '標記刪除'] 
+                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '附件名稱', '標記刪除'] 
 
                 # 使用 column_order 來控制顯示
+                # 【關鍵功能：啟用單行選取模式 (selection_mode)】
                 edited_df_value = st.data_editor(
                     editable_df,
                     column_order=cols_to_display,
@@ -1424,15 +1425,8 @@ def render_project_tables(df, project_metadata):
                         "附件名稱": st.column_config.TextColumn(
                             "附件檔名",
                             width="medium",
-                            disabled=True
-                        ),
-                        
-                        # 【修正點 5】預覽勾選框
-                        "預覽": st.column_config.CheckboxColumn(
-                            "預覽",
-                            width="small",
-                            help="勾選以在下方預覽附件",
-                            default=False
+                            disabled=True,
+                            help="點擊該行以在下方預覽"
                         ),
                         
                         "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny"), 
@@ -1441,23 +1435,33 @@ def render_project_tables(df, project_metadata):
                     hide_index=True, 
                     use_container_width=True,
                     height=150 + (len(item_data) * 35) if len(item_data) > 3 else 150,
-                    disabled=is_locked
+                    disabled=is_locked,
+                    on_select="rerun", # 啟用點擊觸發
+                    selection_mode="single-row" # 啟用單行選取
                 )
                 
                 st.session_state.edited_dataframes[item_name] = edited_df_value 
-
-                # 【預覽觸發邏輯】
-                # 檢查是否有任何列被勾選為 '預覽'
-                if '預覽' in edited_df_value.columns:
-                    preview_rows = edited_df_value[edited_df_value['預覽'] == True]
-                    if not preview_rows.empty:
-                        # 取得最後一個被勾選的 ID (假設使用者剛點擊了這個)
-                        target_id = preview_rows.iloc[-1]['ID']
+                
+                # 【點擊列觸發預覽邏輯 (解決多表格衝突)】
+                # 1. 獲取當前表格的選取狀態
+                current_selection = st.session_state[editor_key].get("selection", {}).get("rows", [])
+                
+                # 2. 獲取上一次記錄的該表格選取狀態
+                previous_selection = st.session_state.editor_selections.get(editor_key, [])
+                
+                # 3. 只有當選取狀態發生「變化」時，才認定是使用者剛點擊了這個表格
+                if current_selection != previous_selection:
+                    st.session_state.editor_selections[editor_key] = current_selection
+                    
+                    if current_selection:
+                        # 使用者選取了某一行
+                        row_idx = current_selection[0]
+                        # 對應回原始 ID (使用 editable_df，確保索引正確)
+                        target_id = editable_df.iloc[row_idx]['ID']
                         
-                        # 如果目標 ID 與當前預覽 ID 不同，則更新並重新運行
-                        if st.session_state.preview_from_table_id != target_id:
-                            st.session_state.preview_from_table_id = target_id
-                            st.rerun()
+                        # 更新全域預覽 ID
+                        st.session_state.preview_from_table_id = target_id
+                        st.rerun()
 
                 st.markdown("---")
     
@@ -1567,6 +1571,7 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
 
 
