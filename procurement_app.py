@@ -1102,6 +1102,7 @@ def initialize_session_state():
 
 
 
+
 def render_sidebar_ui(df, project_metadata, today):
     """渲染整個側邊欄 UI：修改/刪除專案、新增專案、新增報價。"""
     
@@ -1316,23 +1317,10 @@ def render_project_tables(df, project_metadata):
     project_names = list(project_groups.groups.keys())
     
     is_locked = st.session_state.show_delete_confirm
-
-    # 【關鍵修正：Streamlit 查詢參數更新】
-    query_params = st.query_params
-    if 'preview_id' in query_params:
-        try:
-            # st.query_params 直接返回單一值 (str)，不需要 [0]
-            clicked_id = int(query_params['preview_id']) 
-            st.session_state.preview_from_table_id = clicked_id
-        except:
-            # 忽略轉換錯誤
-            pass
-            
-        # 清除 URL 參數，避免重整時重複觸發
-        # 使用 st.query_params 刪除參數的方式
-        if 'preview_id' in st.query_params:
-            del st.query_params['preview_id'] 
-
+    
+    # 清除舊的 query params 邏輯，改用 session state
+    if 'preview_from_table_id' not in st.session_state:
+        st.session_state.preview_from_table_id = None
 
     for i, proj_name in enumerate(project_names):
         proj_data = project_groups.get_group(proj_name)
@@ -1393,19 +1381,14 @@ def render_project_tables(df, project_metadata):
 
                 editor_key = f"editor_{proj_name}_{item_name}"
                 
-                # 【改為 LinkColumn】生成相對路徑 URL，而非 Markdown
-                def create_link_url(row):
-                    file_name = row.get('附件', '').strip()
-                    quote_id = row['ID']
-                    if file_name:
-                        # 生成 query params 連結，點擊後會重整並帶上參數
-                        return f"?preview_id={quote_id}"
-                    return None
-                
-                editable_df['附件_display'] = editable_df.apply(create_link_url, axis=1)
+                # 【新增功能：預覽勾選框】
+                # 新增一個 '預覽' 欄位，預設為 False。
+                # 我們不顯示檔名連結，改顯示檔名文字 (唯讀) + 預覽勾選框
+                editable_df['附件名稱'] = editable_df['附件'].apply(lambda x: os.path.basename(x) if x else '')
+                editable_df['預覽'] = False
                 
                 # 【修正點 3】表格欄位顯示順序
-                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '附件_display', '標記刪除'] 
+                cols_to_display = ['選取', '供應商', '單價', '數量', '總價', '預計交貨日', '交期判定', '狀態', '最後修改時間', '附件名稱', '預覽', '標記刪除'] 
 
                 # 使用 column_order 來控制顯示
                 edited_df_value = st.data_editor(
@@ -1437,12 +1420,19 @@ def render_project_tables(df, project_metadata):
                             help="報價項目最後儲存的時間"
                         ),
                         
-                        # 【修正點 4】改用 LinkColumn，確保可點擊
-                        "附件_display": st.column_config.LinkColumn(
-                            "附件", 
-                            width="medium", 
-                            help="點擊以在下方預覽附件",
-                            display_text="📎 檢視附件" # 統一顯示文字，解決中文檔名編碼與 LinkColumn 顯示問題
+                        # 【修正點 4】顯示附件檔名 (唯讀)
+                        "附件名稱": st.column_config.TextColumn(
+                            "附件檔名",
+                            width="medium",
+                            disabled=True
+                        ),
+                        
+                        # 【修正點 5】預覽勾選框
+                        "預覽": st.column_config.CheckboxColumn(
+                            "預覽",
+                            width="small",
+                            help="勾選以在下方預覽附件",
+                            default=False
                         ),
                         
                         "標記刪除": st.column_config.CheckboxColumn("刪除?", width="tiny"), 
@@ -1455,6 +1445,20 @@ def render_project_tables(df, project_metadata):
                 )
                 
                 st.session_state.edited_dataframes[item_name] = edited_df_value 
+
+                # 【預覽觸發邏輯】
+                # 檢查是否有任何列被勾選為 '預覽'
+                if '預覽' in edited_df_value.columns:
+                    preview_rows = edited_df_value[edited_df_value['預覽'] == True]
+                    if not preview_rows.empty:
+                        # 取得最後一個被勾選的 ID (假設使用者剛點擊了這個)
+                        target_id = preview_rows.iloc[-1]['ID']
+                        
+                        # 如果目標 ID 與當前預覽 ID 不同，則更新並重新運行
+                        if st.session_state.preview_from_table_id != target_id:
+                            st.session_state.preview_from_table_id = target_id
+                            st.rerun()
+
                 st.markdown("---")
     
     # *** 資料匯出區塊 ***
@@ -1464,6 +1468,8 @@ def render_project_tables(df, project_metadata):
                       convert_df_to_excel(df), 
                       f'procurement_report_{datetime.now().strftime("%Y%m%d")}.xlsx', 
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
 
 
 
@@ -1561,6 +1567,7 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
 
 
